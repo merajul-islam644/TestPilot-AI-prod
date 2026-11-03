@@ -1,7 +1,9 @@
 import { LogOut, Settings, UserRound } from "lucide-react";
 import { useAuth } from "../providers/AuthProvider";
+import { useAvatar } from "../../features/profile/useAvatar";
 import { useCurrentUser, userDisplayName, userInitials } from "../../features/profile/useCurrentUser";
 import { useT } from "../../lib/i18n/LocalizationProvider";
+import { UserAvatar } from "../../shared/ui/UserAvatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,8 +17,10 @@ export function UserMenu({ onNavigate }: { onNavigate: (path: string) => void })
   const { logout } = useAuth();
   const { t } = useT();
   const me = useCurrentUser();
+  const { avatar } = useAvatar();
   const profile = me.data?.data;
   const name = userDisplayName(profile) || (me.isLoading ? "…" : "…");
+  const initials = userInitials(profile);
   const roles = profile?.roles ?? [];
 
   function handleLogout() {
@@ -27,11 +31,11 @@ export function UserMenu({ onNavigate }: { onNavigate: (path: string) => void })
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="user-menu-trigger" aria-label={t("nav.profile")}>
-        <span className="avatar avatar-sm">{userInitials(profile)}</span>
+        <UserAvatar initials={initials} size="sm" url={avatar?.url} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[280px]">
         <DropdownMenuLabel className="flex items-center gap-3 font-normal">
-          <span className="avatar avatar-lg">{userInitials(profile)}</span>
+          <UserAvatar initials={initials} size="lg" url={avatar?.url} />
           <div className="grid gap-0.5 overflow-hidden">
             <strong className="truncate text-sm font-semibold">{name}</strong>
             {profile?.email ? <small className="truncate text-xs text-[hsl(var(--muted-foreground))]">{profile.email}</small> : null}

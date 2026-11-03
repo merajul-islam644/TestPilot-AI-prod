@@ -170,6 +170,43 @@ function ReportsSkeleton() {
   );
 }
 
+/** Profile: hero card (photo + identity) above the access/session pair. */
+function ProfileSkeleton() {
+  return (
+    <div className="page-skeleton">
+      <div className="panel identity-hero">
+        <div className="identity-body">
+          <span className="skeleton skeleton-avatar-hero" />
+          <div className="identity-main">
+            <Line tall width="36%" />
+            <Line width="52%" />
+            <div className="skel-row">
+              <span className="skeleton skel-chip" />
+              <span className="skeleton skel-chip" />
+            </div>
+          </div>
+        </div>
+        <div className="identity-foot">
+          <Line width="240px" />
+          <Line width="120px" />
+        </div>
+      </div>
+      <div className="grid-2">
+        <Card>
+          <HeadRow />
+          <Line width="70%" />
+          <Line width="46%" />
+        </Card>
+        <Card>
+          <HeadRow />
+          <Line width="64%" />
+          <Line width="52%" />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 /** Settings / help / profile: no gateway data, keep it light. */
 function GenericSkeleton() {
   return (
@@ -207,6 +244,7 @@ export function PageSkeleton({ ariaLabel, path }: { ariaLabel?: string; path: st
   else if (base === "projects") body = isDetail ? <DetailSkeleton /> : <ProjectsSkeleton />;
   else if (base === "runs" || base === "suites" || base === "issues") body = isDetail ? <DetailSkeleton /> : <ListSkeleton />;
   else if (base === "reports") body = <ReportsSkeleton />;
+  else if (base === "profile") body = <ProfileSkeleton />;
   else body = <GenericSkeleton />;
 
   return (
