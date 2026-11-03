@@ -1,0 +1,23 @@
+{
+  "app.name": "Blocks App",
+  "auth.back": "Back to sign in",
+  "auth.continue": "Continue with Blocks",
+  "auth.failed": "Sign-in failed",
+  "auth.notConfigured": "Login is not configured yet. Register a public OIDC client and set VITE_BLOCKS_OIDC_CLIENT_ID in .env.",
+  "auth.redirecting": "Redirecting...",
+  "auth.subtitle": "Sign in with your Blocks account to continue.",
+  "auth.welcome": "Welcome back",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "error": "Something went wrong",
+  "loading": "Loading",
+  "refresh": "Refresh",
+  "save": "Save",
+  "nav.logout": "Log out",
+  "nav.profile": "Profile",
+  "notFound.home": "Back home",
+  "notFound.message": "This page does not exist.",
+  "notFound.title": "404",
+  "profile.subtitle": "Signed-in user details from Blocks IAM.",
+  "profile.title": "Profile"
+}

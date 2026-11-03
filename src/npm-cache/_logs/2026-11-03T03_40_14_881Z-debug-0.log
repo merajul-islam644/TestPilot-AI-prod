@@ -1,0 +1,226 @@
+0 verbose cli C:\nvm4w\nodejs\node.exe C:\nvm4w\nodejs\node_modules\npm\bin\npm-cli.js
+1 info using npm@11.8.0
+2 info using node@v24.9.0
+3 silly config load:file:C:\Users\user\AppData\Local\nvm\v24.9.0\node_modules\npm\npmrc
+4 silly config load:file:D:\MY_PORTFOLIO\ALL_PORTFOLIO\Testpilot AI\testpilot-ai\.npmrc
+5 silly config load:file:C:\Users\user\.npmrc
+6 silly config load:file:C:\nvm4w\nodejs\etc\npmrc
+7 verbose title npm install sonner
+8 verbose argv "install" "sonner"
+9 verbose logfile logs-max:10 dir:D:\MY_PORTFOLIO\ALL_PORTFOLIO\Testpilot AI\testpilot-ai\src\npm-cache\_logs\2026-11-03T03_40_14_881Z-
+10 verbose logfile D:\MY_PORTFOLIO\ALL_PORTFOLIO\Testpilot AI\testpilot-ai\src\npm-cache\_logs\2026-11-03T03_40_14_881Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:2348810240 maxSize:587202560 maxEntrySize:293601280
+13 verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+14 silly idealTree buildDeps
+15 silly fetch manifest sonner@*
+16 silly packumentCache full:https://registry.npmjs.org/sonner cache-miss
+17 http fetch GET 200 https://registry.npmjs.org/npm 1991ms
+18 http fetch GET 200 https://registry.npmjs.org/sonner 2782ms (cache miss)
+19 silly packumentCache full:https://registry.npmjs.org/sonner set size:undefined disposed:false
+20 silly fetch manifest @types/react@^18.3.31
+21 silly packumentCache full:https://registry.npmjs.org/@types%2freact cache-miss
+22 http fetch GET 200 https://registry.npmjs.org/@types%2freact 359ms (cache miss)
+23 silly packumentCache full:https://registry.npmjs.org/@types%2freact set size:undefined disposed:false
+24 silly fetch manifest react@^18.3.1
+25 silly packumentCache full:https://registry.npmjs.org/react cache-miss
+26 http fetch GET 200 https://registry.npmjs.org/react 341ms (cache miss)
+27 silly packumentCache full:https://registry.npmjs.org/react set size:undefined disposed:false
+28 silly fetch manifest react-dom@^18.3.1
+29 silly packumentCache full:https://registry.npmjs.org/react-dom cache-miss
+30 http fetch GET 200 https://registry.npmjs.org/react-dom 384ms (cache miss)
+31 silly packumentCache full:https://registry.npmjs.org/react-dom set size:undefined disposed:false
+32 silly placeDep ROOT sonner@2.0.8 OK for:  want: *
+33 silly reify moves {}
+34 silly audit bulk request {
+34 silly audit   '@alloc/quick-lru': [ '5.3.0' ],
+34 silly audit   '@floating-ui/core': [ '1.8.0' ],
+34 silly audit   '@floating-ui/dom': [ '1.8.0' ],
+34 silly audit   '@floating-ui/react-dom': [ '2.1.9' ],
+34 silly audit   '@floating-ui/utils': [ '0.2.12' ],
+34 silly audit   '@jridgewell/gen-mapping': [ '0.3.13' ],
+34 silly audit   '@jridgewell/resolve-uri': [ '3.1.2' ],
+34 silly audit   '@jridgewell/sourcemap-codec': [ '1.6.0' ],
+34 silly audit   '@jridgewell/trace-mapping': [ '0.3.31' ],
+34 silly audit   '@nodelib/fs.scandir': [ '2.1.5' ],
+34 silly audit   '@nodelib/fs.stat': [ '2.0.5' ],
+34 silly audit   '@nodelib/fs.walk': [ '1.2.8' ],
+34 silly audit   '@oxc-project/types': [ '0.156.0' ],
+34 silly audit   '@radix-ui/primitive': [ '1.2.0' ],
+34 silly audit   '@radix-ui/react-arrow': [ '1.1.17' ],
+34 silly audit   '@radix-ui/react-collection': [ '1.2.0' ],
+34 silly audit   '@radix-ui/react-compose-refs': [ '1.1.5' ],
+34 silly audit   '@radix-ui/react-context': [ '1.3.0' ],
+34 silly audit   '@radix-ui/react-direction': [ '1.2.0' ],
+34 silly audit   '@radix-ui/react-dismissable-layer': [ '1.2.1' ],
+34 silly audit   '@radix-ui/react-dropdown-menu': [ '2.2.1' ],
+34 silly audit   '@radix-ui/react-focus-guards': [ '1.2.0' ],
+34 silly audit   '@radix-ui/react-focus-scope': [ '1.3.1' ],
+34 silly audit   '@radix-ui/react-id': [ '1.1.4' ],
+34 silly audit   '@radix-ui/react-menu': [ '2.2.1' ],
+34 silly audit   '@radix-ui/react-popper': [ '1.4.0' ],
+34 silly audit   '@radix-ui/react-portal': [ '1.2.0' ],
+34 silly audit   '@radix-ui/react-presence': [ '1.1.11' ],
+34 silly audit   '@radix-ui/react-primitive': [ '2.2.0' ],
+34 silly audit   '@radix-ui/react-roving-focus': [ '1.2.1' ],
+34 silly audit   '@radix-ui/react-slot': [ '1.5.0' ],
+34 silly audit   '@radix-ui/react-use-callback-ref': [ '1.1.5' ],
+34 silly audit   '@radix-ui/react-use-controllable-state': [ '1.3.0' ],
+34 silly audit   '@radix-ui/react-use-effect-event': [ '0.0.5' ],
+34 silly audit   '@radix-ui/react-use-is-hydrated': [ '0.1.3' ],
+34 silly audit   '@radix-ui/react-use-layout-effect': [ '1.1.4' ],
+34 silly audit   '@radix-ui/react-use-rect': [ '1.1.4' ],
+34 silly audit   '@radix-ui/react-use-size': [ '1.1.5' ],
+34 silly audit   '@radix-ui/rect': [ '1.1.3' ],
+34 silly audit   '@rolldown/binding-android-arm-eabi': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-android-arm64': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-darwin-arm64': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-darwin-x64': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-freebsd-x64': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-arm-gnueabihf': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-arm64-gnu': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-arm64-musl': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-ppc64-gnu': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-s390x-gnu': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-x64-gnu': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-linux-x64-musl': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-openharmony-arm64': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-win32-arm64-msvc': [ '1.2.16' ],
+34 silly audit   '@rolldown/binding-win32-x64-msvc': [ '1.2.16' ],
+34 silly audit   '@rolldown/pluginutils': [ '1.0.1' ],
+34 silly audit   '@seliseblocks/client': [ '0.3.0' ],
+34 silly audit   '@tanstack/query-core': [ '5.105.1' ],
+34 silly audit   '@tanstack/react-query': [ '5.105.1' ],
+34 silly audit   '@types/node': [ '22.20.5' ],
+34 silly audit   '@types/node-forge': [ '1.3.14' ],
+34 silly audit   '@types/prop-types': [ '15.7.15' ],
+34 silly audit   '@types/react': [ '18.3.31' ],
+34 silly audit   '@types/react-dom': [ '18.3.7' ],
+34 silly audit   '@vitejs/plugin-react': [ '6.2.1' ],
+34 silly audit   'any-promise': [ '1.3.0' ],
+34 silly audit   anymatch: [ '3.1.3' ],
+34 silly audit   arg: [ '5.0.2' ],
+34 silly audit   'aria-hidden': [ '1.2.6' ],
+34 silly audit   autoprefixer: [ '10.6.2' ],
+34 silly audit   'baseline-browser-mapping': [ '2.11.34' ],
+34 silly audit   'binary-extensions': [ '2.3.0' ],
+34 silly audit   braces: [ '3.0.3' ],
+34 silly audit   browserslist: [ '4.29.5' ],
+34 silly audit   'camelcase-css': [ '2.0.1' ],
+34 silly audit   'caniuse-lite': [ '1.0.30001820' ],
+34 silly audit   chokidar: [ '3.6.0' ],
+34 silly audit   'glob-parent': [ '5.1.2', '6.0.2' ],
+34 silly audit   clsx: [ '2.1.1' ],
+34 silly audit   commander: [ '4.1.1' ],
+34 silly audit   cssesc: [ '3.0.0' ],
+34 silly audit   csstype: [ '3.2.3' ],
+34 silly audit   'detect-libc': [ '2.1.2' ],
+34 silly audit   'detect-node-es': [ '1.1.0' ],
+34 silly audit   didyoumean: [ '1.2.2' ],
+34 silly audit   dlv: [ '1.1.3' ],
+34 silly audit   'electron-to-chromium': [ '1.5.472' ],
+34 silly audit   'es-errors': [ '1.3.0' ],
+34 silly audit   escalade: [ '3.2.0' ],
+34 silly audit   'fast-glob': [ '3.3.3' ],
+34 silly audit   fastq: [ '1.20.3' ],
+34 silly audit   'fill-range': [ '7.1.1' ],
+34 silly audit   'fraction.js': [ '5.3.4' ],
+34 silly audit   fsevents: [ '2.3.3' ],
+34 silly audit   'function-bind': [ '1.1.2' ],
+34 silly audit   'get-nonce': [ '1.0.1' ],
+34 silly audit   hasown: [ '2.0.4' ],
+34 silly audit   'is-binary-path': [ '2.1.0' ],
+34 silly audit   'is-core-module': [ '2.17.0' ],
+34 silly audit   'is-extglob': [ '2.1.1' ],
+34 silly audit   'is-glob': [ '4.0.3' ],
+34 silly audit   'is-number': [ '7.0.0' ],
+34 silly audit   jiti: [ '1.21.7' ],
+34 silly audit   'js-tokens': [ '4.0.0' ],
+34 silly audit   lightningcss: [ '1.33.0' ],
+34 silly audit   'lightningcss-android-arm64': [ '1.33.0' ],
+34 silly audit   'lightningcss-darwin-arm64': [ '1.33.0' ],
+34 silly audit   'lightningcss-darwin-x64': [ '1.33.0' ],
+34 silly audit   'lightningcss-freebsd-x64': [ '1.33.0' ],
+34 silly audit   'lightningcss-linux-arm-gnueabihf': [ '1.33.0' ],
+34 silly audit   'lightningcss-linux-arm64-gnu': [ '1.33.0' ],
+34 silly audit   'lightningcss-linux-arm64-musl': [ '1.33.0' ],
+34 silly audit   'lightningcss-linux-x64-gnu': [ '1.33.0' ],
+34 silly audit   'lightningcss-linux-x64-musl': [ '1.33.0' ],
+34 silly audit   'lightningcss-win32-arm64-msvc': [ '1.33.0' ],
+34 silly audit   'lightningcss-win32-x64-msvc': [ '1.33.0' ],
+34 silly audit   lilconfig: [ '3.1.4' ],
+34 silly audit   'lines-and-columns': [ '1.2.4' ],
+34 silly audit   'loose-envify': [ '1.4.0' ],
+34 silly audit   'lucide-react': [ '1.66.0' ],
+34 silly audit   merge2: [ '1.4.1' ],
+34 silly audit   micromatch: [ '4.0.8' ],
+34 silly audit   mz: [ '2.7.0' ],
+34 silly audit   nanoid: [ '3.3.20' ],
+34 silly audit   'node-forge': [ '1.4.2' ],
+34 silly audit   'node-releases': [ '2.0.63' ],
+34 silly audit   'normalize-path': [ '3.0.0' ],
+34 silly audit   'object-assign': [ '4.1.1' ],
+34 silly audit   'object-hash': [ '3.0.0' ],
+34 silly audit   'path-parse': [ '1.0.7' ],
+34 silly audit   picocolors: [ '1.1.1' ],
+34 silly audit   picomatch: [ '2.3.2', '4.0.7' ],
+34 silly audit   pirates: [ '4.0.7' ],
+34 silly audit   postcss: [ '8.5.32' ],
+34 silly audit   'postcss-import': [ '15.1.0' ],
+34 silly audit   'postcss-js': [ '4.1.0' ],
+34 silly audit   'postcss-load-config': [ '6.0.1' ],
+34 silly audit   'postcss-nested': [ '6.2.0' ],
+34 silly audit   'postcss-selector-parser': [ '6.1.5' ],
+34 silly audit   'postcss-value-parser': [ '4.2.0' ],
+34 silly audit   'queue-microtask': [ '1.2.3' ],
+34 silly audit   react: [ '18.3.1' ],
+34 silly audit   'react-dom': [ '18.3.1' ],
+34 silly audit   'react-remove-scroll': [ '2.7.2' ],
+34 silly audit   'react-remove-scroll-bar': [ '2.3.8' ],
+34 silly audit   'react-style-singleton': [ '2.2.3' ],
+34 silly audit   'read-cache': [ '1.0.2' ],
+34 silly audit   readdirp: [ '3.6.0' ],
+34 silly audit   resolve: [ '1.22.13' ],
+34 silly audit   reusify: [ '1.1.0' ],
+34 silly audit   rolldown: [ '1.2.16' ],
+34 silly audit   'run-parallel': [ '1.2.0' ],
+34 silly audit   scheduler: [ '0.23.2' ],
+34 silly audit   selfsigned: [ '2.4.1' ],
+34 silly audit   'source-map-js': [ '1.2.2' ],
+34 silly audit   sucrase: [ '3.35.1' ],
+34 silly audit   'supports-preserve-symlinks-flag': [ '1.0.0' ],
+34 silly audit   'tailwind-merge': [ '3.7.0' ],
+34 silly audit   tailwindcss: [ '3.4.19' ],
+34 silly audit   thenify: [ '3.3.1' ],
+34 silly audit   'thenify-all': [ '1.6.0' ],
+34 silly audit   tinyglobby: [ '0.2.17' ],
+34 silly audit   fdir: [ '6.5.0' ],
+34 silly audit   'to-regex-range': [ '5.0.1' ],
+34 silly audit   'ts-interface-checker': [ '0.1.13' ],
+34 silly audit   tslib: [ '2.9.1' ],
+34 silly audit   typescript: [ '5.9.3' ],
+34 silly audit   'undici-types': [ '6.21.0' ],
+34 silly audit   'update-browserslist-db': [ '1.3.4' ],
+34 silly audit   'use-callback-ref': [ '1.3.3' ],
+34 silly audit   'use-sidecar': [ '1.1.3' ],
+34 silly audit   'util-deprecate': [ '1.0.2' ],
+34 silly audit   vite: [ '8.3.5' ],
+34 silly audit   sonner: [ '2.0.8' ]
+34 silly audit }
+35 http cache sonner@https://registry.npmjs.org/sonner/-/sonner-2.0.8.tgz 0ms (cache hit)
+36 silly tarball no local data for sonner@https://registry.npmjs.org/sonner/-/sonner-2.0.8.tgz. Extracting by manifest.
+37 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 319ms
+38 silly audit report {}
+39 http fetch GET 200 https://registry.npmjs.org/sonner/-/sonner-2.0.8.tgz 382ms (cache miss)
+40 silly ADD node_modules/sonner
+41 verbose cwd D:\MY_PORTFOLIO\ALL_PORTFOLIO\Testpilot AI\testpilot-ai
+42 verbose os Windows_NT 10.0.19045
+43 verbose node v24.9.0
+44 verbose npm  v11.8.0
+45 notice
+45 notice New minor version of npm available! 11.8.0 -> 11.21.1
+45 notice Changelog: https://github.com/npm/cli/releases/tag/v11.21.1
+45 notice To update run: npm install -g npm@11.21.1
+45 notice  { force: true, Symbol(proc-log.meta): true }
+46 verbose exit 0
+47 info ok
