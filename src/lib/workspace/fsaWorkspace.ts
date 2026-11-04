@@ -40,7 +40,7 @@ export type FsFileHandle = {
   kind: "file";
   name: string;
   getFile(): Promise<File>;
-  createWritable(options?: { keepExistingData?: boolean }): Promise<FsWritable>;
+  createWritable(): Promise<FsWritable>;
 };
 
 export type FsDirHandle = {
@@ -71,7 +71,7 @@ export function fsaSupported(): boolean {
 /** Native directory picker → a handle with read+write requested. */
 export async function pickDirectory(): Promise<FsDirHandle | null> {
   const picker = (window as unknown as {
-    showDirectoryPicker(options?: { mode?: "read" | "readwrite"; id?: string; startIn?: unknown }): Promise<FileSystemDirectoryHandle>;
+    showDirectoryPicker(options?: { mode?: "read" | "readwrite" }): Promise<FileSystemDirectoryHandle>;
   }).showDirectoryPicker;
   try {
     const handle = await picker({ mode: "readwrite" });
@@ -210,6 +210,14 @@ async function dirFor(root: FsDirHandle, dirPath: string, create: boolean): Prom
   return dir;
 }
 
+/** Resolve a workspace-relative file path to its handle (throws when
+ *  missing — callers decide what a NotFoundError means for them). */
+async function fileFor(root: FsDirHandle, path: string): Promise<FsFileHandle> {
+  const segments = path.split("/").filter(Boolean);
+  const dir = await dirFor(root, segments.slice(0, -1).join("/"), false);
+  return dir.getFileHandle(lastOf(segments));
+}
+
 function notFound(path: string): Error {
   return new Error(`not found: ${path}`);
 }
@@ -261,10 +269,7 @@ export async function listFsaTree(root: FsDirHandle, maxDepth = LIST_MAX_DEPTH):
 /** Read one text file; null when missing (the runner's 404 contract). */
 export async function readFsaFile(root: FsDirHandle, path: string): Promise<string | null> {
   try {
-    const segments = path.split("/").filter(Boolean);
-    const dir = await dirFor(root, segments.slice(0, -1).join("/"), false);
-    const file = await dir.getFileHandle(lastOf(segments));
-    return await (await file.getFile()).text();
+    return await (await (await fileFor(root, path)).getFile()).text();
   } catch (error) {
     if (isMissing(error)) return null;
     throw error;
@@ -320,6 +325,19 @@ async function copyDirTo(root: FsDirHandle, dir: FsDirHandle, targetPath: string
   }
 }
 
+/** Whether `name` exists under `dir` — as a file or a directory. */
+async function targetExists(dir: FsDirHandle, name: string): Promise<boolean> {
+  try {
+    await dir.getFileHandle(name);
+    return true;
+  } catch { /* not a file — try as a directory */ }
+  try {
+    await dir.getDirectoryHandle(name);
+    return true;
+  } catch { /* not a directory either */ }
+  return false;
+}
+
 /**
  * Rename/move by copy+delete — the FSA spec ships no rename. The target
  * must not exist (the runner's 409 contract). The copy completes BEFORE
@@ -329,24 +347,13 @@ export async function renameFsaPath(root: FsDirHandle, oldPath: string, newPath:
   const oldSegments = oldPath.split("/").filter(Boolean);
   const newSegments = newPath.split("/").filter(Boolean);
   if (oldSegments.length === 0 || newSegments.length === 0) throw new Error("bad path");
-  // Target must not exist — file or directory.
+  // Target must not exist. A missing target PARENT is fine (the copy
+  // below creates it) — only an existing target is refused.
   try {
     const newParent = await dirFor(root, newSegments.slice(0, -1).join("/"), false);
-    const newName = lastOf(newSegments);
-    let exists = true;
-    try {
-      await newParent.getFileHandle(newName);
-    } catch {
-      try {
-        await newParent.getDirectoryHandle(newName);
-      } catch {
-        exists = false;
-      }
-    }
-    if (exists) throw new Error(`already exists: ${newPath}`);
+    if (await targetExists(newParent, lastOf(newSegments))) throw new Error(`already exists: ${newPath}`);
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("already exists")) throw error;
-    // Parent missing is fine — the write below creates it.
+    if (!isMissing(error)) throw error;
   }
   const oldParent = await dirFor(root, oldSegments.slice(0, -1).join("/"), false);
   const oldName = lastOf(oldSegments);
@@ -389,15 +396,7 @@ export async function searchFsaWorkspace(root: FsDirHandle, query: string): Prom
       break;
     }
     if (pathSkipReason(path)) continue;
-    const resolved = await (async () => {
-      try {
-        const segments = path.split("/").filter(Boolean);
-        const dir = await dirFor(root, segments.slice(0, -1).join("/"), false);
-        return await dir.getFileHandle(lastOf(segments));
-      } catch {
-        return null;
-      }
-    })();
+    const resolved = await fileFor(root, path).catch(() => null);
     if (!resolved) continue;
     const blob = await resolved.getFile();
     if (blob.size > SEARCH_MAX_FILE_BYTES) continue;
@@ -427,7 +426,7 @@ export async function searchFsaWorkspace(root: FsDirHandle, query: string): Prom
 // runner transport answers (Firefox, or a runner-path workspace).
 
 export type WorkspaceIo = {
-  listTree(opts: { root: string; maxDepth?: number }): Promise<{ tree: FolderNode[]; exists: boolean }>;
+  listTree(opts: { root: string }): Promise<{ tree: FolderNode[]; exists: boolean }>;
   readUserFile(opts: { root: string; path: string }): Promise<string | null>;
   writeUserFile(opts: { root: string; path: string; content: string }): Promise<void>;
   deleteUserPath(opts: { root: string; path: string }): Promise<void>;

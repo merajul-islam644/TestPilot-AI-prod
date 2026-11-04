@@ -44,6 +44,7 @@ import {
   createWorkspaceIo,
   ensureFsaPermission,
   fsaSupported,
+  listFsaTree,
   loadRootHandle,
   pickDirectory,
   pickFileWithFolder,
@@ -347,7 +348,7 @@ export function useTestWorkspace(project: Project) {
     setCreatedPath(undefined);
     try {
       const { tree, exists } = fsaHandle
-        ? await createWorkspaceIo(fsaHandle).listTree({ root: rootPath })
+        ? await listFsaTree(fsaHandle)
         : await io.listTree({ root: rootPath });
       if (!exists) {
         if (opts.announce) toast.error("Folder not found", { description: rootPath });
