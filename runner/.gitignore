@@ -4,3 +4,5 @@ npm-cache/
 test-results/
 *.log
 wb-pin.dll
+wb-dialog.dll
+wb-dialog.cs

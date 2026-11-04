@@ -8,23 +8,30 @@
 // file on disk through the runner's /api/workbench routes. There is no
 // stored copy anywhere, so nothing a refresh or a flaky backend can lose.
 //
+// Content is LAZY (Lattice parity, and why a refresh no longer feels
+// like a re-import): a folder open loads the tree PATHS only — the one
+// cheap list call — and each file's text is fetched when its tab opens.
+// Content search runs server-side (/api/workbench/search) for the same
+// reason. Unopened files are by definition unedited, so the SCM changes
+// list, save-all and run-flush keep their exact eager-model semantics.
+//
 // This hook deliberately knows nothing about the workbench chrome (tabs,
 // sidebar, palette) -- Workbench.tsx owns that split. Feedback that is
 // about the data (open summary, save confirmation, run failures) toasts
 // from here so every caller gets the same messages.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { runPlaywrightTests } from "../../../lib/demo/store";
-import type { PlaywrightRunOutcome, WorkspaceFile } from "../../../lib/demo/store";
+import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
 import * as cloud from "../../../lib/blocks/data";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
 import { pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/client";
 import { localFolder } from "../../../lib/workspace/localFolder";
+import type { SearchResponse } from "../../../lib/workspace/localFolder";
 import {
   CODE_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
-  IMPORT_MAX_TOTAL_BYTES,
   isRunnableSpecPath,
   pathSkipReason
 } from "../../../lib/workspace/importFiles";
@@ -32,6 +39,14 @@ import type { ImportReport } from "../../../lib/workspace/importFiles";
 import type { Project } from "../../../lib/demo/data";
 
 export const DEFAULT_BASE_URL = "https://example.com";
+
+/**
+ * Per-file cap for opening a file in the editor. The bulk-import budget
+ * (IMPORT_MAX_FILE_BYTES) governed reading EVERY file; lazily we only
+ * need to protect Monaco from pathological single files. The runner
+ * still enforces its own per-file cap at run time.
+ */
+const EDITOR_MAX_FILE_BYTES = 2_000_000;
 
 // The picked folder is remembered per project (Lattice persists its
 // workspace root the same way) so a refresh reopens the same workspace.
@@ -80,17 +95,23 @@ function writeSavedSettings(projectId: string, baseURL: string): void {
 export function useTestWorkspace(project: Project) {
   const { t } = useT();
 
-  const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  /** Workspace file paths (tree leaves that passed the guards). */
+  const [paths, setPaths] = useState<string[]>([]);
+  /** Content of LOADED files only — a tab has been opened for it. */
+  const [contents, setContents] = useState<Record<string, string>>({});
   const [savedContents, setSavedContents] = useState<Record<string, string>>({});
+  /** Paths with a read in flight (mirrored to a ref for call-time checks). */
+  const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+  const loadingRef = useRef<Set<string>>(new Set());
   const [baseURL, setBaseURL] = useState(DEFAULT_BASE_URL);
   const [savedBaseURL, setSavedBaseURL] = useState(DEFAULT_BASE_URL);
-  /** The picked folder — the workspace itself. Null = starter draft. */
+  /** The picked folder — the workspace itself. Null = empty workspace. */
   const [root, setRoot] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  /** True while a folder is being opened (tree walk + first reads). */
+  /** True while a folder is being opened (the tree list call). */
   const [opening, setOpening] = useState(false);
-  /** Live progress for opening a folder / applying a pull, surfaced in
-   *  the explorer and the status bar (null when idle). */
+  /** Live progress for applying a pull, surfaced in the explorer and the
+   *  status bar (null when idle). Folder opens no longer stream reads. */
   const [importProgress, setImportProgress] = useState<cloud.ImportProgress | null>(null);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -135,7 +156,8 @@ export function useTestWorkspace(project: Project) {
     }
     function startEmptyWorkspace() {
       setRoot(null);
-      setFiles([]);
+      setPaths([]);
+      setContents({});
       setSavedContents({});
       setLoaded(true);
       setRevision((value) => value + 1);
@@ -158,10 +180,12 @@ export function useTestWorkspace(project: Project) {
   }, [running]);
 
   const dirtyPaths = useMemo(
-    () => new Set(files.filter((file) => file.content !== savedContents[file.path]).map((file) => file.path)),
-    [files, savedContents]
+    // Only loaded files can be dirty: an unopened file was never edited
+    // in this session, so it equals its disk version by definition.
+    () => new Set(paths.filter((path) => contents[path] !== undefined && contents[path] !== savedContents[path])),
+    [paths, contents, savedContents]
   );
-  const runnableCount = useMemo(() => files.filter((file) => isRunnableSpecPath(file.path)).length, [files]);
+  const runnableCount = useMemo(() => paths.filter((path) => isRunnableSpecPath(path)).length, [paths]);
 
   /** Append a timestamped line to the panel's Output tab. */
   function appendOutput(line: string): void {
@@ -172,21 +196,75 @@ export function useTestWorkspace(project: Project) {
     setOutputLines([]);
   }
 
-  const contentOf = (path: string) => files.find((file) => file.path === path)?.content ?? "";
+  const contentOf = (path: string) => contents[path] ?? "";
   /** The last saved (disk) content of a path — the "original" side of the
    *  SCM diff view. A path never saved this session diffs against "". */
   const savedContentOf = (path: string) => savedContents[path] ?? "";
+  const isLoaded = useCallback((path: string) => contents[path] !== undefined, [contents]);
+  const isLoading = useCallback((path: string) => loadingPaths.has(path), [loadingPaths]);
 
   const setContent = (path: string, content: string) => {
-    setFiles((prev) => prev.map((file) => (file.path === path ? { ...file, content } : file)));
+    setContents((prev) => ({ ...prev, [path]: content }));
   };
 
+  // ── Lazy content loading (Lattice parity) ────────────────────────
+  // Tabs fetch their own text: openTab → the chrome's effect calls
+  // ensureLoaded, which reads the missing files once and records the
+  // disk baseline for the dirty check. Returns the content it fetched
+  // so async flows (run) can use it without re-reading stale state.
+
+  const ensureLoaded = useCallback(async (targets: string[]): Promise<Record<string, string>> => {
+    if (!root) return {};
+    const missing = targets.filter((path) =>
+      path.length > 0 && contents[path] === undefined && !loadingRef.current.has(path)
+    );
+    if (missing.length === 0) return {};
+    const fetched: Record<string, string> = {};
+    const refused: string[] = [];
+    await Promise.all(missing.map(async (path) => {
+      loadingRef.current.add(path);
+      try {
+        const content = await localFolder.readUserFile({ root, path });
+        if (content === null) {
+          // Deleted out from under the editor (git/another editor):
+          // drop the ghost path from the tree.
+          setPaths((prev) => prev.filter((entry) => entry !== path));
+          return;
+        }
+        if (content.length > EDITOR_MAX_FILE_BYTES) {
+          refused.push(path);
+          return;
+        }
+        fetched[path] = content;
+        setContents((prev) => ({ ...prev, [path]: content }));
+        setSavedContents((prev) => ({ ...prev, [path]: content }));
+      } catch (error) {
+        console.warn("[TestPilot] File read failed:", path, error);
+      } finally {
+        loadingRef.current.delete(path);
+      }
+    }));
+    setLoadingPaths(new Set(loadingRef.current));
+    if (refused.length > 0) {
+      toast.info("File too large to edit", {
+        description: `${refused.length} file(s) over ${Math.round(EDITOR_MAX_FILE_BYTES / 1000)} KB stay on disk`
+      });
+    }
+    return fetched;
+  }, [root, contents]);
+
+  /** Server-side content search (the SPA holds no bulk text anymore). */
+  const searchWorkspace = useCallback(async (query: string): Promise<SearchResponse> => {
+    if (!root || query.trim().length < 2) return { results: [], truncated: false };
+    return localFolder.search({ root, query });
+  }, [root]);
+
   // ── Open folder ─────────────────────────────────────────────────
-  // The Lattice flow: walk the real folder, read the text files into
-  // the editor, remember the root. Binaries, secret-shaped files and
-  // build-output dirs never enter the editor (the same guards the old
-  // importer applied); files beyond the size budget stay on disk,
-  // just unread here.
+  // The Lattice flow, lazy edition: walk the real folder's TREE only
+  // (one list call) and remember the root. Binaries, secret-shaped
+  // files and build-output dirs never enter the tree (the same guards
+  // the old importer applied). No per-file reads happen here — tabs
+  // fetch their own content, so a refresh is this one call.
 
   /**
    * Open `rootPath` as this project's workspace. Resolves false when the
@@ -194,7 +272,9 @@ export function useTestWorkspace(project: Project) {
    */
   async function loadFolder(rootPath: string, opts: { announce: boolean }): Promise<boolean> {
     setOpening(true);
-    setImportProgress({ phase: "clearing", done: 0, total: 0 });
+    // A stale reveal (a file created before this open) must not leak
+    // into the new session's default tab.
+    setCreatedPath(undefined);
     try {
       const { tree, exists } = await localFolder.listTree({ root: rootPath });
       if (!exists) {
@@ -203,57 +283,29 @@ export function useTestWorkspace(project: Project) {
       }
       // Flatten + filter with the workspace guards (binaries, secrets,
       // build output). The server already hides node_modules/.git.
-      const paths: string[] = [];
+      const found: string[] = [];
       const walk = (nodes: Awaited<ReturnType<typeof localFolder.listTree>>["tree"]) => {
         for (const node of nodes) {
           if (node.kind === "dir") walk(node.children ?? []);
-          else paths.push(node.path);
+          else found.push(node.path);
         }
       };
       walk(tree);
-      const candidates = paths.filter((path) => pathSkipReason(path) === null);
-      setImportProgress({ phase: "reading", done: 0, total: candidates.length });
+      const candidates = found.filter((path) => pathSkipReason(path) === null);
 
-      const contents = new Map<string, string>();
-      let totalBytes = 0;
-      let skipped = 0;
-      // Small pool so the tree paints while reads stream in.
-      const CONCURRENCY = 4;
-      let cursor = 0;
-      async function worker() {
-        while (cursor < candidates.length) {
-          const path = candidates[cursor++];
-          if (path === undefined) break;
-          try {
-            const content = await localFolder.readUserFile({ root: rootPath, path });
-            if (content === null) continue; // deleted between walk and read
-            if (content.length > IMPORT_MAX_FILE_BYTES || totalBytes + content.length > IMPORT_MAX_TOTAL_BYTES) {
-              skipped += 1;
-              continue;
-            }
-            totalBytes += content.length;
-            contents.set(path, content);
-          } catch (error) {
-            skipped += 1;
-            console.warn("[TestPilot] Folder read failed:", path, error);
-          }
-          setImportProgress({ phase: "reading", done: contents.size + skipped, total: candidates.length });
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, worker));
-
-      const nextFiles = [...contents.entries()].map(([path, content]) => ({ path, content }));
       setRoot(rootPath);
       writeSavedRoot(project.id, rootPath);
-      setFiles(nextFiles);
-      setSavedContents(Object.fromEntries(nextFiles.map((file) => [file.path, file.content])));
+      setPaths(candidates);
+      setContents({});
+      setSavedContents({});
       setLoaded(true);
       setRevision((value) => value + 1);
       if (opts.announce) {
         const name = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
+        const skipped = found.length - candidates.length;
         toast.success(`Opened ${name}`, {
-          description: nextFiles.length > 0
-            ? `${nextFiles.length} file${nextFiles.length === 1 ? "" : "s"} on disk${skipped > 0 ? ` · ${skipped} skipped (binary/secret/large)` : ""}`
+          description: candidates.length > 0
+            ? `${candidates.length} file${candidates.length === 1 ? "" : "s"} on disk${skipped > 0 ? ` · ${skipped} skipped (binary/secret)` : ""}`
             : "Empty folder — create a spec with the + button"
         });
       }
@@ -293,11 +345,48 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
+  /** Native OS file dialog → the file's folder becomes the workspace
+   *  and the file itself opens (VS Code's "Open File", folder-rooted
+   *  edition: a file always lives inside an open workspace here). The
+   *  same import guards apply — a binary/secret-shaped pick is refused
+   *  with the reason before any folder load starts. */
+  async function openFileFromDisk(): Promise<void> {
+    if (opening) return;
+    try {
+      const result = await localFolder.pickFile();
+      if (!("path" in result)) {
+        if (result.reason !== "cancelled") {
+          toast.error("Native file dialog unavailable", {
+            description: "This machine's OS could not show a file picker."
+          });
+        }
+        return;
+      }
+      const reason = pathSkipReason(result.rel ?? "");
+      if (reason) {
+        toast.error("This file type cannot be opened", {
+          description: `${result.rel} — filtered (${reason})`
+        });
+        return;
+      }
+      const ok = await loadFolder(result.folder ?? "", { announce: true });
+      // Same reveal a fresh-created file gets: the chrome expands the
+      // file's parents and opens its tab.
+      if (ok) setCreatedPath(result.rel);
+    } catch (error) {
+      console.warn("[TestPilot] File picker failed:", error);
+      toast.error("File picker failed", {
+        description: "Is the local runner running? Start it from runner/ (npm start)."
+      });
+    }
+  }
+
   /** Close the folder: back to the empty workspace (files stay on disk). */
   function closeFolder(): void {
     writeSavedRoot(project.id, null);
     setRoot(null);
-    setFiles([]);
+    setPaths([]);
+    setContents({});
     setSavedContents({});
     setRevision((value) => value + 1);
     toast.success("Folder closed");
@@ -342,7 +431,8 @@ export function useTestWorkspace(project: Project) {
     });
   }
 
-  /** Create a file at an arbitrary nested path and write it to disk. */
+  /** Create a file at an arbitrary nested path and write it to disk.
+   *  A created file is loaded by construction (content known). */
   async function createFile(path: string, content = ""): Promise<boolean> {
     if (!root) {
       toast.error("Open a folder first", { description: "The + button writes into the open workspace folder." });
@@ -357,14 +447,15 @@ export function useTestWorkspace(project: Project) {
       toast.error("Paths use forward slashes and may not contain .. segments");
       return false;
     }
-    if (files.some((file) => file.path === clean)) {
+    if (paths.includes(clean)) {
       toast.error("A file with this path already exists", { description: clean });
       return false;
     }
     setSaving(true);
     try {
       await localFolder.writeUserFile({ root, path: clean, content });
-      setFiles((prev) => [...prev, { path: clean, content }]);
+      setPaths((prev) => [...prev, clean]);
+      setContents((prev) => ({ ...prev, [clean]: content }));
       setSavedContents((prev) => ({ ...prev, [clean]: content }));
       setCreatedPath(clean);
       return true;
@@ -381,7 +472,12 @@ export function useTestWorkspace(project: Project) {
   function revertFile(path: string): void {
     const saved = savedContents[path];
     if (saved === undefined) {
-      setFiles((prev) => prev.filter((file) => file.path !== path));
+      setPaths((prev) => prev.filter((entry) => entry !== path));
+      setContents((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
       return;
     }
     setContent(path, saved);
@@ -420,7 +516,8 @@ export function useTestWorkspace(project: Project) {
   /**
    * Rename a file or a whole folder — ONE disk operation (the runner's
    * rename moves directories atomically), then the local state flips so
-   * the chrome retargets tabs through renameTick/renameMap.
+   * the chrome retargets tabs through renameTick/renameMap. Loaded
+   * contents move with their paths; unloaded paths just retarget.
    */
   async function renamePath(from: string, to: string): Promise<boolean> {
     if (!root) return false;
@@ -434,41 +531,39 @@ export function useTestWorkspace(project: Project) {
       return false;
     }
     if (clean === from) return true;
-    const isFolder = !files.some((file) => file.path === from);
+    const isFolder = !paths.includes(from);
     const victims = isFolder
-      ? files.filter((file) => file.path.startsWith(`${from}/`))
-      : files.filter((file) => file.path === from);
+      ? paths.filter((path) => path.startsWith(`${from}/`))
+      : paths.filter((path) => path === from);
     if (victims.length === 0) return false;
     if (isFolder && clean.startsWith(`${from}/`)) {
       toast.error("A folder cannot be moved inside itself");
       return false;
     }
-    const renames = new Map(victims.map((file) => [
-      file.path,
-      isFolder ? `${clean}${file.path.slice(from.length)}` : clean
+    const renames = new Map(victims.map((path) => [
+      path,
+      isFolder ? `${clean}${path.slice(from.length)}` : clean
     ]));
     // A destination path may not collide with a file that stays put.
     const renameTargets = new Set(renames.values());
-    if (files.some((file) => renameTargets.has(file.path) && !renames.has(file.path))) {
+    if (paths.some((path) => renameTargets.has(path) && !renames.has(path))) {
       toast.error("A file with the new name already exists", { description: clean });
       return false;
     }
     setSaving(true);
     try {
       await localFolder.renameUserPath({ root, oldPath: from, newPath: clean });
-      setFiles((prev) => prev.map((file) => {
-        const newPath = renames.get(file.path);
-        return newPath ? { path: newPath, content: file.content } : file;
-      }));
-      setSavedContents((prev) => {
-        const next = { ...prev };
-        for (const [oldPath, newPath] of renames) {
-          const file = victims.find((entry) => entry.path === oldPath);
-          delete next[oldPath];
-          if (file) next[newPath] = file.content;
+      setPaths((prev) => prev.map((path) => renames.get(path) ?? path));
+      const retargetKeys = (prev: Record<string, string>): Record<string, string> => {
+        const next: Record<string, string> = {};
+        for (const [key, value] of Object.entries(prev)) {
+          const mapped = renames.get(key);
+          next[mapped ?? key] = value;
         }
         return next;
-      });
+      };
+      setContents(retargetKeys);
+      setSavedContents(retargetKeys);
       setRenameMap(Object.fromEntries(renames));
       setRenameTick((v) => v + 1);
       toast.success(isFolder ? "Folder renamed" : "Renamed", {
@@ -490,7 +585,7 @@ export function useTestWorkspace(project: Project) {
 
   function requestDelete(path: string, isFolder = false): void {
     const count = isFolder
-      ? files.filter((file) => file.path === path || file.path.startsWith(`${path}/`)).length
+      ? paths.filter((path2) => path2 === path || path2.startsWith(`${path}/`)).length
       : 1;
     setPendingDelete({ path, isFolder, count });
   }
@@ -500,9 +595,11 @@ export function useTestWorkspace(project: Project) {
     const target = pendingDelete;
     setPendingDelete(undefined);
     if (!target || !root) return;
-    const victimCount = target.isFolder
-      ? files.filter((file) => file.path === target.path || file.path.startsWith(`${target.path}/`)).length
-      : 1;
+    const victimPaths = new Set(
+      target.isFolder
+        ? paths.filter((path) => path === target.path || path.startsWith(`${target.path}/`))
+        : [target.path]
+    );
     try {
       await localFolder.deleteUserPath({ root, path: target.path });
     } catch (error) {
@@ -514,20 +611,17 @@ export function useTestWorkspace(project: Project) {
       }
       // Already gone (another editor/git) — treat as success.
     }
-    const victimPaths = new Set(
-      target.isFolder
-        ? files.filter((file) => file.path === target.path || file.path.startsWith(`${target.path}/`)).map((file) => file.path)
-        : [target.path]
-    );
-    setFiles((prev) => prev.filter((file) => !victimPaths.has(file.path)));
-    setSavedContents((prev) => {
+    setPaths((prev) => prev.filter((path) => !victimPaths.has(path)));
+    const purge = (prev: Record<string, string>): Record<string, string> => {
       const next = { ...prev };
       for (const path of victimPaths) delete next[path];
       return next;
-    });
+    };
+    setContents(purge);
+    setSavedContents(purge);
     toast.success(target.isFolder ? "Folder deleted" : "File deleted", {
       description: target.isFolder
-        ? `${target.path} (${victimCount} file${victimCount === 1 ? "" : "s"})`
+        ? `${target.path} (${victimPaths.size} file${victimPaths.size === 1 ? "" : "s"})`
         : target.path
     });
   }
@@ -535,7 +629,9 @@ export function useTestWorkspace(project: Project) {
   // ── Pull (Source Control) — writes the pulled files INTO the open folder ──
 
   /** Persist a staged pull report into the open folder on disk. Progress
-   *  streams to importProgress (the explorer/status bar UI is shared). */
+   *  streams to importProgress (the explorer/status bar UI is shared).
+   *  Written files arrive with content in hand, so they are recorded as
+   *  loaded — opening one costs no extra read. */
   async function applyImport(): Promise<void> {
     const report = pendingImport;
     setPendingImport(undefined);
@@ -552,15 +648,11 @@ export function useTestWorkspace(project: Project) {
         written.set(file.path, file.content);
         setImportProgress({ phase: "writing", done: written.size, total: report.files.length });
       }
-      setFiles((prev) => {
-        const merged = [...prev];
-        for (const [path, content] of written) {
-          const existing = merged.findIndex((entry) => entry.path === path);
-          if (existing >= 0) merged[existing] = { path, content };
-          else merged.push({ path, content });
-        }
-        return merged;
+      setPaths((prev) => {
+        const known = new Set(prev);
+        return [...prev, ...[...written.keys()].filter((path) => !known.has(path))];
       });
+      setContents((prev) => ({ ...prev, ...Object.fromEntries(written) }));
       setSavedContents((prev) => ({ ...prev, ...Object.fromEntries(written) }));
       setRevision((value) => value + 1);
       const skippedLine =
@@ -589,7 +681,7 @@ export function useTestWorkspace(project: Project) {
     setErrorText(undefined);
     setOutcome(undefined);
     setRunning(true);
-    appendOutput(`Run started — ${wsRunnableCount()} runnable spec(s) · base URL ${baseURL} · runner ${runnerUrl()}`);
+    appendOutput(`Run started — ${runnableCount} runnable spec(s) · base URL ${baseURL} · runner ${runnerUrl()}`);
     try {
       // What runs is what is on disk: flush every dirty file (and the
       // base URL) first so the executed run matches the editor state.
@@ -603,7 +695,7 @@ export function useTestWorkspace(project: Project) {
         setSavedBaseURL(baseURL);
       }
 
-      const runnable = files.filter((file) => isRunnableSpecPath(file.path));
+      const runnable = paths.filter((path) => isRunnableSpecPath(path));
       if (runnable.length === 0) {
         appendOutput("✖ No runnable specs in the workspace");
         toast.error(t("tests.noSpecs"));
@@ -616,15 +708,34 @@ export function useTestWorkspace(project: Project) {
       const selected = runnable.slice(0, RUNNER_MAX_FILES);
       // Specs share the file budget with the code files they import: the
       // runner needs the helpers on disk to resolve relative imports.
+      // Helpers may never have been opened — load the run set first
+      // (bounded: at most RUNNER_MAX_FILES files total).
       const helperBudget = Math.max(0, RUNNER_MAX_FILES - selected.length);
-      const helpers = files
-        .filter((file) => !isRunnableSpecPath(file.path) && CODE_FILE_EXTENSIONS.test(file.path) && file.content.length > 0)
+      const helperPaths = paths
+        .filter((path) => !isRunnableSpecPath(path) && CODE_FILE_EXTENSIONS.test(path))
         .slice(0, helperBudget);
-      appendOutput(`Dispatched to runner — ${selected.length} spec(s) + ${helpers.length} helper file(s)`);
+      const fetched = await ensureLoaded([...selected, ...helperPaths]);
+      const contentNow = (path: string): string => fetched[path] ?? contentOf(path);
+
+      // The runner refuses files over its own per-file cap — exclude
+      // those here and say so, instead of failing the whole run.
+      const RUNNER_FILE_CAP = 200_000;
+      const oversized = [...selected].filter((path) => contentNow(path).length > RUNNER_FILE_CAP);
+      const sendable = selected.filter((path) => contentNow(path).length <= RUNNER_FILE_CAP);
+      if (oversized.length > 0) {
+        appendOutput(`⚠ ${oversized.length} spec(s) over the runner's 200 KB file cap were skipped`);
+      }
+      if (sendable.length === 0) {
+        appendOutput("✖ No runnable specs in the workspace");
+        toast.error(t("tests.noSpecs"));
+        return;
+      }
+      const helpers = helperPaths.filter((path) => contentNow(path).length > 0);
+      appendOutput(`Dispatched to runner — ${sendable.length} spec(s) + ${helpers.length} helper file(s)`);
       const result = await runPlaywrightTests({
         projectId: project.id,
         baseURL,
-        files: [...selected, ...helpers].map((file) => ({ name: file.path, content: file.content }))
+        files: [...sendable, ...helpers].map((path) => ({ name: path, content: contentNow(path) }))
       });
       appendOutput(`✔ Run finished — ${result.run.passed} passed · ${result.run.failed} failed · ${result.run.total} total · ${result.run.durationSec}s`);
       setOutcome(result);
@@ -637,14 +748,10 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
-  function wsRunnableCount(): number {
-    return files.filter((file) => isRunnableSpecPath(file.path)).length;
-  }
-
   return {
-    files,
+    paths,
     loaded,
-    loadedWithoutFiles: loaded && files.length === 0,
+    loadedWithoutFiles: loaded && paths.length === 0,
     root,
     opening,
     revision,
@@ -664,8 +771,13 @@ export function useTestWorkspace(project: Project) {
     clearOutput,
     contentOf,
     savedContentOf,
+    isLoaded,
+    isLoading,
+    ensureLoaded,
+    searchWorkspace,
     setContent,
     openFolder,
+    openFileFromDisk,
     closeFolder,
     saveFile,
     saveAll,

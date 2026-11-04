@@ -124,10 +124,12 @@ async function walkTree(root, maxDepth = FOLDER_MAX_TREE_DEPTH) {
   return walk(absRoot, "", 0);
 }
 
-// Native OS folder dialog — PowerShell FolderBrowserDialog on Windows,
-// osascript on macOS, zenity/kdialog on Linux. A failed shim answers
-// { cancelled, reason } so the UI shows an error toast instead of
-// throwing (Lattice devServer.ts:pickNativeFolder).
+// Classic OS folder dialog — PowerShell FolderBrowserDialog on Windows,
+// osascript on macOS, zenity/kdialog on Linux. On Windows this script is
+// the FALLBACK only: the modern Explorer-style picker (WIN_DIALOG_PS +
+// wb-dialog.dll below) runs whenever its boot-compiled DLL exists. A
+// failed shim answers { cancelled, reason } so the UI shows an error
+// toast instead of throwing (Lattice devServer.ts:pickNativeFolder).
 const WIN_PICKER_PS = [
   "Add-Type -AssemblyName System.Windows.Forms | Out-Null;",
   "$f = New-Object System.Windows.Forms.FolderBrowserDialog;",
@@ -151,6 +153,298 @@ const WIN_PICKER_PS = [
   // keeps stdio ignored on Windows, so nothing can block on a pipe.
   "$out = if ($r -eq [System.Windows.Forms.DialogResult]::OK) { $f.SelectedPath } else { '' };",
   "Set-Content -LiteralPath $env:WB_PICK_OUT -Value $out -Encoding Unicode;"
+].join(" ");
+
+// Modern Explorer-style dialog (the Vista+ IFileDialog — the same window
+// Chrome and VS Code show for Open/Save). Folder mode sets
+// FOS_PICKFOLDERS, file mode behaves as a plain Open File. Like
+// wb-pin.dll, the COM interop is compiled ONCE at runner boot
+// (wb-dialog.cs → wb-dialog.dll): a pick must never wait on the C#
+// compiler (the 06:57 incident), and PowerShell 5.1 only ships the
+// ancient FolderBrowserDialog tree, which the user asked to replace.
+const DIALOG_CS_SRC = `
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+// IFileDialog wrapper for the workbench picker — all COM interop lives
+// here so the PowerShell side stays a five-liner. Pick runs on the
+// PowerShell main thread, which the spawn flags make STA (the classic
+// FolderBrowserDialog flow proved it on this machine).
+public class WbDialog {
+  [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+  private class FileOpenDialogRCW {}
+
+  // The dialog's vtable, declared in exact slot order (a wrong order
+  // corrupts memory). The IID is IFileOpenDialog's, VERIFIED against
+  // this machine (the widely-copied "D57B7FA4" snippet GUID is a myth
+  // and QIs E_NOINTERFACE): IFileOpenDialog extends IFileDialog, so
+  // this IFileDialog method prefix is its vtable prologue — valid.
+  [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  private interface IFileDialog {
+    [PreserveSig] int Show(IntPtr hwndOwner);
+    [PreserveSig] int SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+    [PreserveSig] int SetFileTypeIndex(uint iFileType);
+    [PreserveSig] int GetFileTypeIndex(out uint piFileType);
+    [PreserveSig] int Advise(IntPtr pfde, out uint pdwCookie);
+    [PreserveSig] int Unadvise(uint dwCookie);
+    [PreserveSig] int SetOptions(uint dwFOS);
+    [PreserveSig] int GetOptions(out uint pdwFOS);
+    [PreserveSig] int SetDefaultFolder(IShellItem psi);
+    [PreserveSig] int SetFolder(IShellItem psi);
+    [PreserveSig] int GetFolder(out IShellItem ppsi);
+    [PreserveSig] int GetCurrentSelection(out IShellItem ppsi);
+    [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    [PreserveSig] int GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+    [PreserveSig] int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    [PreserveSig] int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+    [PreserveSig] int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+    [PreserveSig] int GetResult(out IShellItem ppsi);
+  }
+
+  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  private interface IShellItem {
+    [PreserveSig] int BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    [PreserveSig] int GetParent(out IShellItem ppsi);
+    [PreserveSig] int GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+  }
+
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+  private static extern void SHCreateItemFromParsingName(string pszPath, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out IShellItem ppsi);
+
+  [DllImport("user32.dll")]
+  private static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")]
+  private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")]
+  private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  private static extern int GetClassName(IntPtr hwnd, [Out] StringBuilder name, int max);
+  [DllImport("user32.dll")]
+  private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+  private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr l);
+  [DllImport("user32.dll")]
+  private static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")]
+  private static extern bool SetForegroundWindow(IntPtr hwnd);
+  [DllImport("user32.dll")]
+  private static extern bool BringWindowToTop(IntPtr hwnd);
+  [DllImport("kernel32.dll")]
+  private static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")]
+  private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+  private const uint FOS_PICKFOLDERS = 0x20;
+  private const uint FOS_FORCEFILESYSTEM = 0x40;
+  private const uint FOS_PATHMUSTEXIST = 0x800;
+  private const uint FOS_FILEMUSTEXIST = 0x1000;
+  private const uint SIGDN_FILESYSPATH = 0x80058000;
+
+  // Two lifts work together so the dialog appears where the user
+  // clicked, not as a taskbar entry behind the browser:
+  //   1. FOREGROUND OWNER — a background process cannot activate its
+  //      windows, so before Show() this thread ATTACHES its input
+  //      queue to the current foreground window's thread
+  //      (AttachThreadInput — the classic, legal foreground-lock
+  //      bypass), then SetForegroundWindow + BringWindowToTop on the
+  //      tiny owner form. Show() places an owned dialog directly
+  //      ABOVE its owner, so with the owner now the top window the
+  //      dialog opens in front, over the browser, with focus.
+  //      (Proven on this machine: an owned dialog whose owner sat
+  //      BEHIND the maximized browser opened visibly-but-behind, with
+  //      no taskbar button and immune to external topmost
+  //      SetWindowPos — the invisible-picker bug. A dialog can also
+  //      never leave its owner's z-band, so fixing the OWNER is the
+  //      only fix.)
+  //   2. THE PIN — only the fallback when there is no foreground
+  //      window to attach to: SetWindowPos(HWND_TOPMOST) on the
+  //      dialog window, polled from a background thread, only once
+  //      the dialog is actually VISIBLE, and without SWP_SHOWWINDOW
+  //      (pinning the hidden, half-initialized window broke Show()
+  //      once).
+  // Diagnostics: what the pin thread actually did, reported verbatim on
+  // a pick that never surfaces.
+  private static string pinStatus = "n/a";
+
+  private static void Pin() {
+    pinStatus = "searching";
+    uint pid = (uint)Process.GetCurrentProcess().Id;
+    for (int i = 0; i < 100; i++) {
+      IntPtr found = IntPtr.Zero;
+      EnumWindows(delegate(IntPtr hwnd, IntPtr l) {
+        uint windowPid;
+        GetWindowThreadProcessId(hwnd, out windowPid);
+        if (windowPid != pid) return true;
+        StringBuilder name = new StringBuilder(32);
+        GetClassName(hwnd, name, 32);
+        if (name.ToString() == "#32770" && IsWindowVisible(hwnd)) { found = hwnd; return false; }
+        return true;
+      }, IntPtr.Zero);
+      if (found != IntPtr.Zero) {
+        // HWND_TOPMOST(-1), SWP_NOMOVE|SWP_NOSIZE (0x3).
+        SetWindowPos(found, (IntPtr)(-1), 0, 0, 0, 0, 0x3);
+        pinStatus = "pinned";
+        return;
+      }
+      Thread.Sleep(100);
+    }
+    pinStatus = "no-dialog-window";
+  }
+
+  // The foreground lift: share input state with whoever owns the
+  // foreground right now (the user's browser, at click time), then the
+  // owner form can legally take foreground + the top of the z-order.
+  // Best-effort — any failure just falls back to the pin.
+  private static bool LiftOwnerToForeground(IntPtr owner) {
+    try {
+      IntPtr fg = GetForegroundWindow();
+      if (fg == IntPtr.Zero || fg == owner) return false;
+      uint fgPid;
+      uint fgTid = GetWindowThreadProcessId(fg, out fgPid);
+      uint myTid = GetCurrentThreadId();
+      if (fgTid == 0 || fgTid == myTid) return false;
+      if (!AttachThreadInput(fgTid, myTid, true)) return false;
+      SetForegroundWindow(owner);
+      BringWindowToTop(owner);
+      AttachThreadInput(fgTid, myTid, false);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Diagnostics watchdog: for 20s after Pick starts, append what the
+  // background machinery actually sees to WB_PICK_LOG — so a pick that
+  // never surfaces leaves a timeline behind, not silence.
+  private static void Watch() {
+    try {
+      string logPath = Environment.GetEnvironmentVariable("WB_PICK_LOG");
+      if (string.IsNullOrEmpty(logPath)) return;
+      uint pid = (uint)Process.GetCurrentProcess().Id;
+      for (int i = 1; i <= 5; i++) {
+        Thread.Sleep(4000);
+        IntPtr dlg = IntPtr.Zero;
+        EnumWindows(delegate(IntPtr hwnd, IntPtr l) {
+          uint wpid;
+          GetWindowThreadProcessId(hwnd, out wpid);
+          if (wpid != pid) return true;
+          StringBuilder name = new StringBuilder(32);
+          GetClassName(hwnd, name, 32);
+          if (name.ToString() == "#32770" && IsWindowVisible(hwnd)) { dlg = hwnd; return false; }
+          return true;
+        }, IntPtr.Zero);
+        string line = DateTime.Now.ToString("HH:mm:ss.fff") + " watch t+" + (i * 4) + "s pin=" + pinStatus +
+                      " dialog=" + (dlg == IntPtr.Zero ? "none" : dlg.ToString());
+        System.IO.File.AppendAllText(logPath, line + "\\r\\n");
+      }
+    } catch { /* diagnostics must never break the pick */ }
+  }
+
+  // mode "folder" | "file"; returns the picked path, "" on a clean user
+  // cancel, or an "ERR:..." diagnostic string on any failure (Show
+  // HRESULT + pin outcome + apartment state, or the exception) so the
+  // logs show WHY nothing opened instead of a silent no-op.
+  public static string Pick(string mode, string title, string startDir, IntPtr owner) {
+    try {
+      return PickCore(mode, title, startDir, owner);
+    } catch (Exception ex) {
+      return "ERR:com=" + ex.GetType().Name + ":" + ex.Message;
+    }
+  }
+
+  private static string PickCore(string mode, string title, string startDir, IntPtr owner) {
+    if (mode != "folder") mode = "file";
+    bool lifted = LiftOwnerToForeground(owner);
+    pinStatus = lifted ? "foreground-owner" : "pin-fallback";
+    if (!lifted) Task.Run(() => Pin());
+    Task.Run(() => Watch());
+    IFileDialog dialog = (IFileDialog)new FileOpenDialogRCW();
+    uint options;
+    dialog.GetOptions(out options);
+    options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+    if (mode == "folder") options |= FOS_PICKFOLDERS; else options |= FOS_FILEMUSTEXIST;
+    dialog.SetOptions(options);
+    dialog.SetTitle(title);
+    if (!string.IsNullOrEmpty(startDir)) {
+      try {
+        Guid iid = typeof(IShellItem).GUID;
+        IShellItem folder;
+        SHCreateItemFromParsingName(startDir, IntPtr.Zero, ref iid, out folder);
+        if (folder != null) dialog.SetFolder(folder);
+      } catch { /* a vanished start dir is not a failure */ }
+    }
+    int hr = dialog.Show(owner);
+    if (hr != 0) {
+      // ERROR_CANCELLED (0x800704C7) = the user closed it — quiet.
+      // Anything else is a real failure: report the exact code.
+      if (hr != unchecked((int)0x800704C7)) {
+        return "ERR:show=0x" + hr.ToString("X8") + " pin=" + pinStatus +
+               " apt=" + Thread.CurrentThread.GetApartmentState();
+      }
+      return "";
+    }
+    IShellItem item;
+    dialog.GetResult(out item);
+    if (item == null) return "";
+    string path;
+    item.GetDisplayName(SIGDN_FILESYSPATH, out path);
+    return path ?? "";
+  }
+
+  // Boot-time sanity check with NO window: the QI plus the option calls
+  // probe the interface layout, and a real shell-item round trip probes
+  // the IShellItem side — everything a pick needs except Show() itself.
+  public static bool SelfTest() {
+    try {
+      IFileDialog dialog = (IFileDialog)new FileOpenDialogRCW();
+      uint options;
+      dialog.GetOptions(out options);
+      dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+      Guid iid = typeof(IShellItem).GUID;
+      IShellItem item;
+      SHCreateItemFromParsingName(Environment.SystemDirectory, IntPtr.Zero, ref iid, out item);
+      if (item == null) return false;
+      string name;
+      item.GetDisplayName(SIGDN_FILESYSPATH, out name);
+      return !string.IsNullOrEmpty(name);
+    } catch {
+      return false;
+    }
+  }
+}
+`;
+
+const WIN_DIALOG_PS = [
+  "$ErrorActionPreference = 'Stop';",
+  // Every step lands in WB_PICK_LOG (a temp file the runner KEEPS), so
+  // a pick that never surfaces leaves the exact reason behind instead
+  // of a silent no-op.
+  "function L([string]$m) { try { Add-Content -LiteralPath $env:WB_PICK_LOG -Value ((Get-Date -Format 'HH:mm:ss.fff') + ' ' + $m) -Encoding Unicode } catch {} }",
+  "L ('start mode=' + $env:WB_PICK_MODE + ' apt=' + [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString());",
+  "Add-Type -AssemblyName System.Windows.Forms | Out-Null;",
+  // The tiny topmost OWNER form is what lifts the dialog over the
+  // maximized browser: an owned dialog activates with its owner chain
+  // and stays out of the taskbar (the classic FolderBrowserDialog
+  // script's proven recipe).
+  "$ow = New-Object System.Windows.Forms.Form;",
+  "$ow.TopMost = $true; $ow.ShowInTaskbar = $false; $ow.Size = New-Object System.Drawing.Size(1,1); $ow.Show();",
+  "L ('owner=' + $ow.Handle.ToString());",
+  "[void][Reflection.Assembly]::LoadFrom($env:WB_DIALOG_DLL);",
+  "L 'dll-loaded';",
+  // Pick owns the topmost pin (see DIALOG_CS_SRC); the owner handle
+  // makes the dialog OWNED so it opens in front, where the user
+  // clicked.
+  "$r = '';",
+  "try { $r = [WbDialog]::Pick($env:WB_PICK_MODE, $env:WB_PICK_TITLE, $env:WB_PICK_START, $ow.Handle); } catch { L ('ps-ex ' + $_.Exception.GetType().Name + ': ' + $_.Exception.Message); }",
+  "L ('result=' + $r);",
+  "$ow.Dispose();",
+  // Result goes to the WB_PICK_OUT temp file, not stdout — the runner
+  // keeps stdio ignored on Windows, so nothing can block on a pipe.
+  "Set-Content -LiteralPath $env:WB_PICK_OUT -Value $r -Encoding Unicode;",
+  "L 'done';"
 ].join(" ");
 
 // Sources for the WbPin helper — compiled once at boot by the runner so
@@ -204,12 +498,64 @@ async function compileWbPin() {
 }
 void compileWbPin();
 
+// Compile the modern dialog interop at boot, then run its no-window
+// self-test so a broken build says so NOW — not the first time the user
+// clicks Open Folder. If anything here fails, picks silently fall back
+// to the classic FolderBrowserDialog script.
+async function compileWbDialog() {
+  if (process.platform !== "win32") return;
+  const csPath = path.join(RUNNER_ROOT, "wb-dialog.cs");
+  const dllPath = path.join(RUNNER_ROOT, "wb-dialog.dll");
+  try {
+    await writeFile(csPath, DIALOG_CS_SRC.trimStart(), "utf8");
+    const windir = process.env.WINDIR ?? "C:\\Windows";
+    const csc = path.join(windir, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+    if (!existsSync(csc)) {
+      console.warn("[TestPilot] csc.exe missing — picks fall back to the classic folder dialog");
+      return;
+    }
+    let compileFailed = false;
+    await new Promise((resolve) => {
+      execFile(csc, ["/nologo", "/target:library", "/optimize+", `/out:${dllPath}`, csPath], (error) => {
+        if (error) {
+          compileFailed = true;
+          console.warn("[TestPilot] wb-dialog.dll compile failed:", String(error));
+        }
+        resolve();
+      });
+    });
+    if (!existsSync(dllPath)) return;
+    console.log(compileFailed
+      ? "[TestPilot] wb-dialog.dll STALE — compile failed (a stuck picker process may still hold the file lock)"
+      : "[TestPilot] wb-dialog.dll compiled");
+    const selfTest =
+      "[void][Reflection.Assembly]::LoadFrom('" + dllPath.replace(/'/g, "''") + "'); " +
+      "if ([WbDialog]::SelfTest()) { 'OK' } else { 'FAIL' }";
+    await new Promise((resolve) => {
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", selfTest], (error, stdout) => {
+        if (error || String(stdout).trim() !== "OK") console.warn("[TestPilot] wb-dialog self-test failed — classic dialog will be used");
+        else console.log("[TestPilot] wb-dialog self-test OK");
+        resolve();
+      });
+    });
+  } catch (error) {
+    console.warn("[TestPilot] wb-dialog compile setup failed:", String(error));
+  }
+}
+void compileWbDialog();
+
 // The in-flight dialog child, if any. Each new pick request kills the
 // previous one — a stale hidden dialog must never pile up (the tab can
 // only show one picker, so the newest click is the user's intent).
 let activePicker = null;
 
-async function pickNativeFolder() {
+// Where the last successful pick happened — the next dialog starts
+// there (VS Code remembers its last folder the same way). In-memory
+// only: a runner restart simply forgets it.
+let lastPickDir = null;
+
+// kind "folder" (workspace root) | "file" (open one file).
+async function pickNative(kind) {
   const isWin = process.platform === "win32";
   const isMac = process.platform === "darwin";
   if (activePicker) {
@@ -225,15 +571,25 @@ async function pickNativeFolder() {
     };
     let cmd;
     let args;
+    const dialogDll = path.join(RUNNER_ROOT, "wb-dialog.dll");
+    const useModern = isWin && existsSync(dialogDll);
+    const title = kind === "folder" ? "Open Folder - TestPilot" : "Open File - TestPilot";
     if (isWin) {
       cmd = "powershell.exe";
-      args = ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", WIN_PICKER_PS];
+      args = [
+        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+        useModern ? WIN_DIALOG_PS : WIN_PICKER_PS
+      ];
     } else if (isMac) {
       cmd = "osascript";
-      args = ["-e", 'set chosenFolder to choose folder with prompt "Select a folder to open in TestPilot"\nPOSIX path of chosenFolder'];
+      args = kind === "folder"
+        ? ["-e", 'set chosenFolder to choose folder with prompt "Select a folder to open in TestPilot"\nPOSIX path of chosenFolder']
+        : ["-e", 'set chosenFile to choose file with prompt "Select a file to open in TestPilot"\nPOSIX path of chosenFile'];
     } else {
       cmd = "zenity";
-      args = ["--file-selection", "--directory", "--title=Open Folder in TestPilot"];
+      args = kind === "folder"
+        ? ["--file-selection", "--directory", "--title=Open Folder in TestPilot"]
+        : ["--file-selection", "--title=Open File in TestPilot"];
     }
     // Windows: stdio fully ignored, the picked path comes back through
     // the WB_PICK_OUT temp file — an unread stdout/stderr pipe can fill
@@ -245,6 +601,14 @@ async function pickNativeFolder() {
       if (outPath) env.WB_PICK_OUT = outPath;
       const pinDll = path.join(RUNNER_ROOT, "wb-pin.dll");
       if (isWin && existsSync(pinDll)) env.WB_PIN_DLL = pinDll;
+      if (useModern) {
+        env.WB_DIALOG_DLL = dialogDll;
+        env.WB_PICK_MODE = kind;
+        env.WB_PICK_TITLE = title;
+        env.WB_PICK_START = lastPickDir ?? "";
+        // Persistent diagnostic log — survives the pick, never unlinked.
+        env.WB_PICK_LOG = path.join(os.tmpdir(), "wb-dialog-debug.log");
+      }
       child = spawn(cmd, args, {
         stdio: isWin ? "ignore" : ["ignore", "pipe", "pipe"],
         env
@@ -282,21 +646,45 @@ async function pickNativeFolder() {
         const text = await readFile(outPath, "utf16le").catch(() => null);
         unlink(outPath).catch(() => { /* already gone */ });
         const picked = text ? text.replace(/^﻿/, "").trim() : "";
-        if (picked.length > 0) finish({ picked });
-        else finish({ picked: null, reason: "cancelled" });
+        if (picked.startsWith("ERR:")) {
+          // A real dialog failure, not a user cancel — keep it loud in
+          // the runner log (the browser side still no-ops silently).
+          console.warn("[TestPilot] picker failed:", picked);
+          finish({ picked: null, reason: "cancelled" });
+        } else if (picked.length > 0) {
+          lastPickDir = path.dirname(picked);
+          finish({ picked });
+        } else finish({ picked: null, reason: "cancelled" });
         return;
       }
       const out = stdout.trim();
-      if (code === 0 && out.length > 0) finish({ picked: out });
-      else finish({ picked: null, reason: code === 0 ? "cancelled" : "no_gui" });
+      if (code === 0 && out.length > 0) {
+        lastPickDir = path.dirname(out);
+        finish({ picked: out });
+      } else finish({ picked: null, reason: code === 0 ? "cancelled" : "no_gui" });
     });
   });
 }
 
 app.post("/api/workbench/pick-folder", async (_req, res) => {
-  const result = await pickNativeFolder();
+  const result = await pickNative("folder");
   if (result.picked) {
     res.json({ path: result.picked });
+    return;
+  }
+  res.json({ cancelled: true, reason: result.reason ?? "cancelled" });
+});
+
+// Pick ONE file: the response adds its folder + a workspace-relative
+// path (forward slashes, matching the tree) so the client opens the
+// file's folder as the root and reveals the file with no path surgery
+// in the browser.
+app.post("/api/workbench/pick-file", async (_req, res) => {
+  const result = await pickNative("file");
+  if (result.picked) {
+    const folder = path.dirname(result.picked);
+    const rel = path.relative(folder, result.picked).split(path.sep).join("/");
+    res.json({ path: result.picked, folder, rel });
     return;
   }
   res.json({ cancelled: true, reason: result.reason ?? "cancelled" });
@@ -319,6 +707,110 @@ app.post("/api/workbench/list", async (req, res) => {
     }
     const tree = await walkTree(root, maxDepth);
     res.json({ tree, exists: true });
+  } catch (error) {
+    res.status(500).json({ error: String(error?.message || error).slice(0, 500) });
+  }
+});
+
+// Content search behind the Search sidebar. The SPA no longer holds every
+// file's text (lazy per-tab reads), so the scan lives here: walk the same
+// guarded tree as /list, skip the same junk (build dirs, binaries, secrets)
+// plus oversize files, scan line-by-line case-insensitively. Hard caps keep
+// a pathological workspace from flooding the response.
+const SEARCH_MAX_FILE_BYTES = 512 * 1024;
+const SEARCH_MAX_FILES_SCANNED = 800;
+const SEARCH_MAX_LINES_PER_FILE = 20;
+const SEARCH_MAX_TOTAL_LINES = 600;
+const SEARCH_SKIP_DIRS = new Set([
+  "node_modules", ".git", ".svn", ".hg", "dist", "build", "out", ".next", ".nuxt",
+  ".output", ".cache", ".parcel-cache", ".turbo", "coverage", ".nyc_output",
+  "venv", ".venv", "env", "__pycache__", ".mypy_cache", ".pytest_cache",
+  ".idea", ".vscode", "vendor", "target", "obj", ".gradle", ".terraform",
+  ".serverless", "tmp", "temp", "logs", ".angular", ".svelte-kit",
+  "test-results", "playwright-report"
+]);
+const SEARCH_BINARY_EXT = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "tif", "tiff",
+  "woff", "woff2", "ttf", "otf", "eot",
+  "mp4", "webm", "mov", "avi", "mkv", "mp3", "wav", "ogg", "flac",
+  "zip", "gz", "tgz", "rar", "7z", "tar", "bz2", "xz",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  "exe", "dll", "so", "dylib", "bin", "dat", "iso", "dmg", "msi", "appimage",
+  "jar", "class", "pyc", "pyd", "wasm", "db", "sqlite", "sqlite3", "pdb", "node"
+]);
+const SEARCH_SECRET_RES = [
+  /^\.env/i,
+  /\.(pem|p12|pfx|key)$/i,
+  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)/i,
+  /(^|\/)(credentials|secrets?)\./i,
+  /\.npmrc$/i,
+  /serviceaccount[^/]*\.json$/i
+];
+
+app.post("/api/workbench/search", async (req, res) => {
+  const root = req.body?.root;
+  const query = typeof req.body?.query === "string" ? req.body.query.trim().toLowerCase() : "";
+  if (!isPlainRoot(root)) {
+    res.status(400).json({ error: "root must be an absolute path" });
+    return;
+  }
+  if (query.length < 2) {
+    res.json({ results: [], truncated: false });
+    return;
+  }
+  try {
+    const rootStat = await stat(path.resolve(root)).catch(() => null);
+    if (!rootStat || !rootStat.isDirectory()) {
+      res.json({ results: [], truncated: false, exists: false });
+      return;
+    }
+    const tree = await walkTree(root);
+    const files = [];
+    const flatten = (nodes) => {
+      for (const node of nodes) {
+        if (node.kind === "dir") flatten(node.children ?? []);
+        else files.push(node.path);
+      }
+    };
+    flatten(tree);
+    const results = [];
+    let scanned = 0;
+    let totalLines = 0;
+    let truncated = false;
+    for (const rel of files) {
+      if (scanned >= SEARCH_MAX_FILES_SCANNED || totalLines >= SEARCH_MAX_TOTAL_LINES) {
+        truncated = true;
+        break;
+      }
+      const segments = rel.split("/");
+      if (segments.some((segment) => SEARCH_SKIP_DIRS.has(segment))) continue;
+      const base = segments[segments.length - 1].toLowerCase();
+      if (SEARCH_SECRET_RES.some((pattern) => pattern.test(base))) continue;
+      const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : "";
+      if (SEARCH_BINARY_EXT.has(ext)) continue;
+      const abs = safeResolveUserFolder(root, rel);
+      if (!abs) continue;
+      const fileStat = await stat(abs).catch(() => null);
+      if (!fileStat || !fileStat.isFile() || fileStat.size > SEARCH_MAX_FILE_BYTES) continue;
+      const text = await readFile(abs, "utf8").catch(() => null);
+      if (text === null || text.includes("\u0000")) continue; // binary
+      scanned += 1;
+      const textLines = text.split("\n");
+      const lines = [];
+      for (let index = 0; index < textLines.length; index++) {
+        if (textLines[index].toLowerCase().indexOf(query) === -1) continue;
+        totalLines += 1;
+        if (lines.length < SEARCH_MAX_LINES_PER_FILE && totalLines <= SEARCH_MAX_TOTAL_LINES) {
+          lines.push({ number: index + 1, text: (textLines[index] ?? "").slice(0, 300) });
+        }
+        if (totalLines >= SEARCH_MAX_TOTAL_LINES) {
+          truncated = true;
+          break;
+        }
+      }
+      if (lines.length > 0) results.push({ path: rel, lines });
+    }
+    res.json({ results, truncated });
   } catch (error) {
     res.status(500).json({ error: String(error?.message || error).slice(0, 500) });
   }

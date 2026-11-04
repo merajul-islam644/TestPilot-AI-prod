@@ -6,13 +6,17 @@ import { ChevronDown, ChevronRight, FilePlus, FolderPlus, Pencil, Trash2 } from 
 import type { TreeNode } from "../model/treeModel";
 import { fileIconElement, folderIconElement } from "../icons/fileIcon";
 
-export function TreeRow({ node, depth, expanded, activePath, dirtyPaths, runnablePaths, onNewFileIn, onNewFolderIn, onOpenFile, onRenameRow, onRequestDelete, onToggleDir }: {
+export function TreeRow({ node, depth, expanded, activePath, dirtyPaths, runnablePaths, isRoot, onNewFileIn, onNewFolderIn, onOpenFile, onRenameRow, onRequestDelete, onToggleDir }: {
   node: TreeNode;
   depth: number;
   expanded: Set<string>;
   activePath: string;
   dirtyPaths: Set<string>;
   runnablePaths: Set<string>;
+  /** The workspace-root row: always open, never toggles, no
+   *  rename/delete — it IS the open folder (VS Code keeps its root
+   *  expanded the same way). */
+  isRoot?: boolean;
   onNewFileIn: (folder: string) => void;
   onNewFolderIn: (folder: string) => void;
   onOpenFile: (path: string) => void;
@@ -22,15 +26,16 @@ export function TreeRow({ node, depth, expanded, activePath, dirtyPaths, runnabl
 }) {
   const children = node.children;
   if (children !== undefined) {
-    const open = expanded.has(node.path);
+    const open = isRoot || expanded.has(node.path);
     return (
       <>
-        <button className={`wb-tree-row${open ? " open" : ""}`} onClick={() => onToggleDir(node.path)} style={{ paddingLeft: 6 + depth * 12 }} type="button">
+        <button className={`wb-tree-row${open ? " open" : ""}`} onClick={isRoot ? undefined : () => onToggleDir(node.path)} style={{ paddingLeft: 6 + depth * 12 }} type="button">
           <span className="wb-tree-chevron">{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
           <span className="wb-tree-icon">{folderIconElement(node.name, open)}</span>
           <span className="wb-tree-name">{node.name}</span>
           {/* Hover actions: new file / new folder inside, delete the folder. Spans
-              (not buttons): the row itself is a <button>, nesting is invalid HTML. */}
+              (not buttons): the row itself is a <button>, nesting is invalid HTML.
+              The root row only offers the two "new" actions — no rename/delete. */}
           <span className="wb-tree-acts">
             <span
               aria-label={`New file in ${node.name}`}
@@ -56,30 +61,34 @@ export function TreeRow({ node, depth, expanded, activePath, dirtyPaths, runnabl
             >
               <FolderPlus size={12} />
             </span>
-            <span
-              aria-label={`Rename folder ${node.name}`}
-              className="wb-tree-act"
-              onClick={(event) => {
-                event.stopPropagation();
-                onRenameRow(node.path);
-              }}
-              role="button"
-              title="Rename folder (moves every file inside)"
-            >
-              <Pencil size={12} />
-            </span>
-            <span
-              aria-label={`Delete folder ${node.name}`}
-              className="wb-tree-act danger"
-              onClick={(event) => {
-                event.stopPropagation();
-                onRequestDelete(node.path, true);
-              }}
-              role="button"
-              title="Delete folder (removes every file inside)"
-            >
-              <Trash2 size={12} />
-            </span>
+            {!isRoot ? (
+              <>
+                <span
+                  aria-label={`Rename folder ${node.name}`}
+                  className="wb-tree-act"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRenameRow(node.path);
+                  }}
+                  role="button"
+                  title="Rename folder (moves every file inside)"
+                >
+                  <Pencil size={12} />
+                </span>
+                <span
+                  aria-label={`Delete folder ${node.name}`}
+                  className="wb-tree-act danger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRequestDelete(node.path, true);
+                  }}
+                  role="button"
+                  title="Delete folder (removes every file inside)"
+                >
+                  <Trash2 size={12} />
+                </span>
+              </>
+            ) : null}
           </span>
         </button>
         {open ? children.map((child) => (

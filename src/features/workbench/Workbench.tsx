@@ -26,7 +26,7 @@ import { StatusBar } from "./components/StatusBar";
 import { useTestWorkspace } from "./data/useTestWorkspace";
 import { workbenchStore, useWorkbench } from "./state/workbenchStore";
 import type { SidebarView } from "./state/workbenchStore";
-import { basenameOf, buildTree, defaultExpanded, languageOf } from "./model/treeModel";
+import { basenameOf, buildTree, languageOf } from "./model/treeModel";
 import { isRunnableSpecPath } from "../../lib/workspace/importFiles";
 import type { Project } from "../../lib/demo/data";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
@@ -62,10 +62,10 @@ export function Workbench({ project }: { project: Project }) {
   /** Bumped to pop the explorer's inline new-file input from the palette. */
   const [newFileSignal, setNewFileSignal] = useState(0);
 
-  const paths = useMemo(() => ws.files.map((file) => file.path), [ws.files]);
+  const paths = ws.paths;
   const tree = useMemo(() => buildTree(paths), [paths]);
   const expanded = useMemo(() => new Set(expandedPaths), [expandedPaths]);
-  const runnablePaths = useMemo(() => new Set(ws.files.filter((file) => isRunnableSpecPath(file.path)).map((file) => file.path)), [ws.files]);
+  const runnablePaths = useMemo(() => new Set(paths.filter((path) => isRunnableSpecPath(path))), [paths]);
   const language = activePath ? languageOf(activePath) : "plaintext";
 
   // Bind the store to this project first: it preloads the saved editor
@@ -76,18 +76,31 @@ export function Workbench({ project }: { project: Project }) {
   }, [project.id]);
 
   // A new workspace SESSION (initial load or import): restore the saved
-  // session when it matches this file set, else open the first runnable
-  // spec in a fresh tab. Keyed on revision, not files -- ordinary edits
-  // must never reset the user's tabs.
+  // session when it matches this file set, else start fresh with every
+  // folder collapsed (VS Code opens a folder with the tree closed; the
+  // user expands what they want, and that choice persists per project).
   useEffect(() => {
     if (!ws.loaded) return;
-    const paths = ws.files.map((file) => file.path);
     if (workbenchStore.consumeFreshSession() || !workbenchStore.restorePersistedSession(paths)) {
-      const first = ws.files.find((file) => isRunnableSpecPath(file.path)) ?? ws.files[0];
-      workbenchStore.resetSession(first?.path ?? "", defaultExpanded(paths));
+      // A file just picked via "Open File from disk" outranks the
+      // default first runnable spec — its reveal below opens that file.
+      const reveal = ws.createdPath && paths.includes(ws.createdPath) ? ws.createdPath : undefined;
+      const first = reveal ?? paths.find((path) => isRunnableSpecPath(path)) ?? paths[0];
+      workbenchStore.resetSession(first ?? "", []);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- ws.files is read fresh at revision bumps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- paths is read fresh at revision bumps
   }, [ws.loaded, ws.revision]);
+
+  // Lazy content loading: every open tab fetches its text from disk the
+  // moment it appears (Lattice's restored-tab pre-fetch). ensureLoaded
+  // is a no-op for already-loaded paths, so re-runs as the user types
+  // cost nothing. Its identity tracks `contents`, keeping the check
+  // honest about what is actually loaded.
+  useEffect(() => {
+    if (!ws.loaded) return;
+    void ws.ensureLoaded(openTabs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ensureLoaded's identity covers contents; ws itself changes every render
+  }, [ws.loaded, openTabs, ws.ensureLoaded]);
 
   // A freshly created file should be visible immediately: expand its
   // parent folders, then open it.
@@ -170,6 +183,7 @@ export function Workbench({ project }: { project: Project }) {
     { id: "wb.saveAll", label: "File: Save All", run: () => void ws.saveAll() },
     { id: "wb.newFile", label: "File: New File", run: () => { workbenchStore.setSidebarView("explorer"); setNewFileSignal((v) => v + 1); } },
     { id: "wb.import", label: "Workspace: Open Folder (disk)", run: () => { workbenchStore.setSidebarView("explorer"); void ws.openFolder(); } },
+    { id: "wb.openFile", label: "File: Open File from Disk", run: () => { workbenchStore.setSidebarView("explorer"); void ws.openFileFromDisk(); } },
     { id: "wb.gitPull", label: "Git: Pull from GitHub", run: () => workbenchStore.setSidebarView("scm") },
     { id: "wb.gitPush", label: "Git: Commit & Push", run: () => workbenchStore.setSidebarView("scm") },
     { id: "wb.explorer", label: "View: Explorer", run: () => workbenchStore.setSidebarView("explorer") },
@@ -209,6 +223,7 @@ export function Workbench({ project }: { project: Project }) {
                 importProgress={ws.importProgress}
                 newFileSignal={newFileSignal}
                 onImport={() => void ws.openFolder()}
+                onOpenFileFromDisk={() => void ws.openFileFromDisk()}
                 onNewFile={async (path) => {
                   const created = await ws.createFile(path);
                   return created;
@@ -226,7 +241,11 @@ export function Workbench({ project }: { project: Project }) {
               />
             ) : null}
             {sidebarView === "search" ? (
-              <SearchView files={ws.files} onOpenFile={(path) => workbenchStore.openTab(path)} />
+              <SearchView
+                onOpenFile={(path) => workbenchStore.openTab(path)}
+                onSearch={(query) => ws.searchWorkspace(query)}
+                root={ws.root}
+              />
             ) : null}
             {sidebarView === "scm" ? (
               <SourceControlView
@@ -244,7 +263,7 @@ export function Workbench({ project }: { project: Project }) {
               <RunView
                 baseURL={ws.baseURL}
                 errorText={ws.errorText}
-                filesCount={ws.files.length}
+                filesCount={ws.paths.length}
                 onBaseURLChange={ws.setBaseURL}
                 onRun={() => void ws.run()}
                 outcome={ws.outcome}
@@ -273,6 +292,7 @@ export function Workbench({ project }: { project: Project }) {
           {activePath ? (
             <EditorHost
               diff={activeIsDiff}
+              loading={activePath ? !ws.isLoaded(activePath) : false}
               originalValue={ws.savedContentOf(activePath)}
               onExitDiff={() => workbenchStore.exitDiff(activePath)}
               onChange={(content) => ws.setContent(activePath, content)}
@@ -315,7 +335,7 @@ export function Workbench({ project }: { project: Project }) {
       <StatusBar
         baseURL={ws.baseURL}
         cursor={activePath ? cursor : null}
-        filesCount={ws.files.length}
+        filesCount={ws.paths.length}
         importProgress={ws.importProgress}
         language={language}
         runnableCount={ws.runnableCount}

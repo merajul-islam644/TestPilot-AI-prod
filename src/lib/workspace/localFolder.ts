@@ -21,9 +21,15 @@ export type FolderNode = {
   children?: FolderNode[];
 };
 
-export type PickFolderResult =
-  | { path: string }
+/** A native dialog answer: the picked path (for pick-file the runner
+ *  adds its parent `folder` + workspace-relative `rel`) or a refusal
+ *  the UI can toast instead of throwing. */
+export type PickResult =
+  | { path: string; folder?: string; rel?: string }
   | { cancelled: true; reason: "cancelled" | "no_gui" | "spawn_failed" };
+
+/** @deprecated legacy alias — use PickResult. */
+export type PickFolderResult = PickResult;
 
 async function postJson<T>(route: string, body: unknown): Promise<T> {
   const response = await fetch(`${runnerUrl()}${route}`, {
@@ -41,8 +47,16 @@ async function postJson<T>(route: string, body: unknown): Promise<T> {
 export const localFolder = {
   /** Native OS folder dialog; the server answers picked / cancelled /
    *  no_gui so the UI can fall back to the typed-path input. */
-  async pickFolder(): Promise<PickFolderResult> {
-    return postJson<PickFolderResult>("/api/workbench/pick-folder", {});
+  async pickFolder(): Promise<PickResult> {
+    return postJson<PickResult>("/api/workbench/pick-folder", {});
+  },
+
+  /** Native OS open-file dialog (the same Explorer-style window, file
+   *  mode). The response carries the file's `folder` and workspace-
+   *  relative `rel` so the caller can open that folder as the root and
+   *  reveal the file in one step. */
+  async pickFile(): Promise<PickResult> {
+    return postJson<PickResult>("/api/workbench/pick-file", {});
   },
 
   /** Recursive tree of the picked folder. Hides node_modules/.git;
@@ -89,5 +103,17 @@ export const localFolder = {
   /** Make a directory (mkdir -p). */
   async mkdirUserPath(opts: { root: string; path: string }): Promise<void> {
     await postJson("/api/workbench/mkdir", { root: opts.root, path: opts.path });
+  },
+
+  /** Server-side content search: walks the guarded tree, skips build
+   *  dirs/binaries/secrets/oversize files, scans case-insensitively.
+   *  Line `text` is the raw line (≤300 chars); the sidebar splits the
+   *  highlight around the query. */
+  async search(opts: { root: string; query: string }): Promise<SearchResponse> {
+    return postJson<SearchResponse>("/api/workbench/search", { root: opts.root, query: opts.query });
   }
 };
+
+export type SearchLine = { number: number; text: string };
+export type SearchGroup = { path: string; lines: SearchLine[] };
+export type SearchResponse = { results: SearchGroup[]; truncated: boolean; exists?: boolean };

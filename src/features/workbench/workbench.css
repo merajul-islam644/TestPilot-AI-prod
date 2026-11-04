@@ -452,6 +452,18 @@ button.wb-tree-empty-cta {
 /* ---------- editor area ---------- */
 
 .wb-editor { flex: 1; min-height: 0; position: relative; }
+/* Lazy load: while a tab's text streams from disk the editor is
+   read-only under a soft veil. */
+.wb-editor-loading {
+  align-items: center;
+  background: hsl(var(--background) / 0.55);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
+}
 
 /* ---------- SCM diff editor ---------- */
 

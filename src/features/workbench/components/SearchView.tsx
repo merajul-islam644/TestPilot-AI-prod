@@ -1,52 +1,75 @@
-// Search sidebar view: case-insensitive content search across every
-// in-memory workspace file, grouped by file like VS Code's results
-// tree. Clicking a match opens that file in an editor tab.
+// Search sidebar view: server-side content search (the workspace no
+// longer holds bulk file text — lazy loading), grouped by file like
+// VS Code's results tree. Debounced as you type; the runner scans the
+// guarded tree and returns matching lines with numbers. Clicking a
+// match opens that file in an editor tab.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fileIconElement } from "../icons/fileIcon";
-import type { WorkspaceFile } from "../../../lib/demo/store";
 
 const MAX_FILES_SHOWN = 20;
 const MAX_LINES_PER_FILE = 5;
 const MAX_TOTAL_MATCHES = 60;
+const DEBOUNCE_MS = 250;
 
-type FileMatches = { path: string; lines: { number: number; before: string; hit: string; after: string }[]; total: number };
-
-function searchFiles(files: WorkspaceFile[], query: string): { groups: FileMatches[]; total: number } {
-  const lower = query.toLowerCase();
-  const groups: FileMatches[] = [];
-  let total = 0;
-  for (const file of files) {
-    if (total >= MAX_TOTAL_MATCHES || groups.length >= MAX_FILES_SHOWN) break;
-    const lines = [];
-    let fileTotal = 0;
-    const content = file.content.split("\n");
-    for (let index = 0; index < content.length; index++) {
-      const lineLower = (content[index] ?? "").toLowerCase();
-      const at = lineLower.indexOf(lower);
-      if (at === -1) continue;
-      fileTotal += 1;
-      if (lines.length < MAX_LINES_PER_FILE && total < MAX_TOTAL_MATCHES) {
-        const line = content[index] ?? "";
-        lines.push({ number: index + 1, before: line.slice(0, at), hit: line.slice(at, at + lower.length), after: line.slice(at + lower.length) });
-        total += 1;
-      }
-    }
-    if (fileTotal > 0) groups.push({ path: file.path, lines, total: fileTotal });
-  }
-  return { groups, total };
-}
-
-export function SearchView({ files, onOpenFile }: {
-  files: WorkspaceFile[];
+export function SearchView({ root, onSearch, onOpenFile }: {
+  /** Workspace root, or null when no folder is open. */
+  root: string | null;
+  /** Runs the search server-side; resolves with raw matching lines. */
+  onSearch: (query: string) => Promise<{ results: { path: string; lines: { number: number; text: string }[] }[]; truncated: boolean }>;
   onOpenFile: (path: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [groups, setGroups] = useState<{ path: string; lines: { number: number; before: string; hit: string; after: string }[]; total: number }[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [truncated, setTruncated] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   const trimmed = query.trim();
-  const result = useMemo(
-    () => (trimmed.length < 2 ? { groups: [], total: 0 } : searchFiles(files, trimmed)),
-    [files, trimmed]
-  );
+  const searchIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!root || trimmed.length < 2) {
+      searchIdRef.current += 1;
+      setGroups([]);
+      setSearching(false);
+      setTruncated(false);
+      setHasSearched(false);
+      return;
+    }
+    const id = searchIdRef.current + 1;
+    searchIdRef.current = id;
+    setSearching(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await onSearch(trimmed);
+        if (searchIdRef.current !== id) return; // a newer query superseded this one
+        const lower = trimmed.toLowerCase();
+        const mapped = response.results.slice(0, MAX_FILES_SHOWN).map((group) => {
+          const lines = group.lines.slice(0, MAX_LINES_PER_FILE).map((line) => {
+            const at = line.text.toLowerCase().indexOf(lower);
+            if (at === -1) return { number: line.number, before: line.text, hit: "", after: "" };
+            return {
+              number: line.number,
+              before: line.text.slice(0, at),
+              hit: line.text.slice(at, at + trimmed.length),
+              after: line.text.slice(at + trimmed.length)
+            };
+          });
+          return { path: group.path, lines, total: group.lines.length };
+        });
+        setGroups(mapped);
+        setTruncated(response.truncated);
+        setHasSearched(true);
+      } catch {
+        if (searchIdRef.current === id) setGroups([]);
+      } finally {
+        if (searchIdRef.current === id) setSearching(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [root, trimmed, onSearch]);
+
+  const total = useMemo(() => groups.reduce((sum, group) => sum + group.total, 0), [groups]);
 
   return (
     <div className="wb-view">
@@ -57,18 +80,25 @@ export function SearchView({ files, onOpenFile }: {
         <input
           className="wb-search-input"
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search in workspace"
+          placeholder={root ? "Search in workspace" : "Open a folder to search"}
           spellCheck={false}
           value={query}
         />
-        {trimmed.length < 2 ? (
+        {!root ? (
+          <p className="wb-search-hint muted">Open a workspace folder first — search scans the real files on disk.</p>
+        ) : trimmed.length < 2 ? (
           <p className="wb-search-hint muted">Type at least two characters to search file contents.</p>
-        ) : result.groups.length === 0 ? (
-          <p className="wb-search-hint muted">No matching lines.</p>
+        ) : searching ? (
+          <p className="wb-search-hint muted">Searching…</p>
+        ) : groups.length === 0 ? (
+          <p className="wb-search-hint muted">{hasSearched ? "No matching lines." : "Searching…"}</p>
         ) : (
           <div className="wb-search-results">
-            <p className="wb-search-summary muted">{result.total} result{result.total === 1 ? "" : "s"} in {result.groups.length} file{result.groups.length === 1 ? "" : "s"}</p>
-            {result.groups.map((group) => (
+            <p className="wb-search-summary muted">
+              {total} result{total === 1 ? "" : "s"} in {groups.length} file{groups.length === 1 ? "" : "s"}
+              {truncated ? " · results capped" : ""}
+            </p>
+            {groups.map((group) => (
               <div className="wb-search-file" key={group.path}>
                 <div className="wb-search-file-head">
                   <span className="wb-tree-icon">{fileIconElement(group.path)}</span>
@@ -80,7 +110,7 @@ export function SearchView({ files, onOpenFile }: {
                     <span className="wb-search-line-no">{line.number}</span>
                     <span className="wb-search-line-text">
                       {line.before}
-                      <mark>{line.hit}</mark>
+                      {line.hit ? <mark>{line.hit}</mark> : null}
                       {line.after}
                     </span>
                   </button>

@@ -7,15 +7,15 @@
 // and the sidebar hide button. With no folder open, the empty state
 // IS the open-folder CTA — one click opens the native folder dialog.
 
-import { useEffect, useState } from "react";
-import { FilePlus, FolderOpen, FolderPlus, PanelLeftClose } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { FileInput, FilePlus, FolderOpen, FolderPlus, PanelLeftClose } from "lucide-react";
 import type { ImportProgress } from "../../../lib/blocks/data";
-import type { TreeNode } from "../model/treeModel";
+import { withRootNode, type TreeNode } from "../model/treeModel";
 import { TreeRow } from "./TreeRow";
 
 type Adding = { kind: "file" | "folder" | "rename"; folder: string | null; original: string | null };
 
-export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, importProgress, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport }: {
+export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, importProgress, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport, onOpenFileFromDisk }: {
   tree: TreeNode[];
   activePath: string;
   dirtyPaths: Set<string>;
@@ -39,9 +39,22 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, 
   onToggleSidebar: () => void;
   /** Open the native OS folder dialog. */
   onImport: () => void;
+  /** Open the native OS file dialog — the file's folder becomes the
+   *  workspace and the file opens. */
+  onOpenFileFromDisk: () => void;
 }) {
   const [adding, setAdding] = useState<Adding | null>(null);
   const [draft, setDraft] = useState("");
+
+  // The open folder itself as the top row — the codebase's identity,
+  // the way VS Code pins the workspace root above every file. The root
+  // row is forced open via the "" path it carries.
+  const rootTree = withRootNode(tree, root);
+  const expandedWithRoot = useMemo(() => {
+    const set = new Set(expanded);
+    if (root) set.add("");
+    return set;
+  }, [expanded, root]);
 
   function startAdding(kind: Adding["kind"], folder: string | null) {
     setAdding({ kind, folder, original: null });
@@ -94,6 +107,9 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, 
           <button aria-label="Open folder from disk" className="wb-icon-btn" disabled={opening} onClick={onImport} title="Open folder from disk" type="button">
             <FolderOpen size={14} />
           </button>
+          <button aria-label="Open a file from disk" className="wb-icon-btn" disabled={opening} onClick={onOpenFileFromDisk} title="Open a file from disk" type="button">
+            <FileInput size={14} />
+          </button>
           <button aria-label="Hide sidebar" className="wb-icon-btn" onClick={onToggleSidebar} title="Hide sidebar (Ctrl+B)" type="button">
             <PanelLeftClose size={14} />
           </button>
@@ -139,29 +155,33 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, 
             />
           </div>
         ) : null}
-        {tree.length === 0
-          ? root
-            ? <p className="wb-tree-empty muted">This folder is empty. Create a spec with the + button above, or pull a repo from Source Control.</p>
-            : <button className="wb-tree-empty muted wb-tree-empty-cta" disabled={opening} onClick={onImport} type="button">
-                Open a folder from your machine to browse and edit its files here — edits save to disk as you go.
-              </button>
-          : tree.map((node) => (
-            <TreeRow
-              activePath={activePath}
-              depth={0}
-              dirtyPaths={dirtyPaths}
-              expanded={expanded}
-              key={node.path}
-              node={node}
-              onNewFileIn={(folder) => startAdding("file", folder)}
-              onNewFolderIn={(folder) => startAdding("folder", folder)}
-              onOpenFile={onOpenFile}
-              onRenameRow={startRenaming}
-              onRequestDelete={onRequestDelete}
-              onToggleDir={onToggleDir}
-              runnablePaths={runnablePaths}
-            />
-          ))}
+        {!root
+          ? <button className="wb-tree-empty muted wb-tree-empty-cta" disabled={opening} onClick={onImport} type="button">
+              Open a folder from your machine to browse and edit its files here — edits save to disk as you go.
+            </button>
+          : (
+            <>
+              {rootTree.map((node) => (
+                <TreeRow
+                  activePath={activePath}
+                  depth={0}
+                  dirtyPaths={dirtyPaths}
+                  expanded={expandedWithRoot}
+                  isRoot
+                  key={node.path || "__root__"}
+                  node={node}
+                  onNewFileIn={(folder) => startAdding("file", folder || null)}
+                  onNewFolderIn={(folder) => startAdding("folder", folder || null)}
+                  onOpenFile={onOpenFile}
+                  onRenameRow={startRenaming}
+                  onRequestDelete={onRequestDelete}
+                  onToggleDir={onToggleDir}
+                  runnablePaths={runnablePaths}
+                />
+              ))}
+              {tree.length === 0 ? <p className="wb-tree-empty muted">This folder is empty. Create a spec with the + button above, or pull a repo from Source Control.</p> : null}
+            </>
+          )}
       </div>
     </div>
   );

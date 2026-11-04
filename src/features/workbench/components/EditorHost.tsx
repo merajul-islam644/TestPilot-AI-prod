@@ -47,13 +47,15 @@ const EDITOR_OPTIONS = {
   tabSize: 2
 };
 
-export function EditorHost({ path, value, originalValue, diff, onExitDiff, onChange, onCursor }: {
+export function EditorHost({ path, value, originalValue, diff, loading, onExitDiff, onChange, onCursor }: {
   path: string;
   value: string;
   /** Saved-on-disk content; the left side of the diff view. */
   originalValue?: string;
   /** Render as a diff editor (SCM click) instead of a plain editor. */
   diff?: boolean;
+  /** Content still streaming from disk (lazy load) — editor is read-only. */
+  loading?: boolean;
   /** Close the diff view: the tab stays open as a plain editor with the
    *  edits intact (the "seen the changes, back to the file" path). */
   onExitDiff?: () => void;
@@ -124,13 +126,18 @@ export function EditorHost({ path, value, originalValue, diff, onExitDiff, onCha
               onCursor({ line: event.position.lineNumber, col: event.position.column });
             });
           }}
-          options={EDITOR_OPTIONS}
+          options={{ ...EDITOR_OPTIONS, readOnly: loading || undefined }}
           path={path || "draft"}
           theme={monacoTheme}
           value={value}
           onChange={(next) => onChange(next ?? "")}
         />
       )}
+      {loading ? (
+        <div className="wb-editor-loading">
+          <span className="muted">{t("common.loading")}</span>
+        </div>
+      ) : null}
     </div>
   );
 }

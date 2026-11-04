@@ -32,6 +32,18 @@ export function buildTree(paths: string[]): TreeNode[] {
   return root.children!;
 }
 
+/**
+ * The open workspace folder as the tree's top node — VS Code shows the
+ * root folder's name above every file (it carries the codebase's
+ * identity). Its path is "" so it can never collide with a real file;
+ * the raw tree passes through unchanged when nothing is open.
+ */
+export function withRootNode(tree: TreeNode[], root: string | null): TreeNode[] {
+  if (!root) return tree;
+  const name = root.slice(Math.max(root.lastIndexOf("/"), root.lastIndexOf("\\")) + 1) || root;
+  return [{ name, path: "", children: tree }];
+}
+
 /** Monaco language id for a workspace path (plaintext when unknown). */
 export function languageOf(path: string): string {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
@@ -53,17 +65,4 @@ export function basenameOf(path: string): string {
 /** Path segments for the editor breadcrumbs (file name last). */
 export function breadcrumbsOf(path: string): string[] {
   return path.split("/").filter(Boolean);
-}
-
-/** The folder paths that should start expanded for a fresh workspace:
- * the root and its first level, so an imported repo opens readable. */
-export function defaultExpanded(paths: string[]): string[] {
-  const folders = new Set<string>();
-  for (const path of paths) {
-    const segments = path.split("/");
-    for (let depth = 1; depth < Math.min(segments.length, 3); depth++) {
-      folders.add(segments.slice(0, depth).join("/"));
-    }
-  }
-  return [...folders];
 }
