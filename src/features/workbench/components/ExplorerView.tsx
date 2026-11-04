@@ -15,11 +15,15 @@ import { TreeRow } from "./TreeRow";
 
 type Adding = { kind: "file" | "folder" | "rename"; folder: string | null; original: string | null };
 
-export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, importProgress, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport, onOpenFileFromDisk }: {
+export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconnect, opening, importProgress, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onReconnectFsa, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport, onOpenFileFromDisk }: {
   tree: TreeNode[];
   activePath: string;
   dirtyPaths: Set<string>;
   expanded: Set<string>;
+  /** A saved browser-handle workspace waiting for its permission to be
+   *  re-granted — shows a reconnect banner above the tree (empty state).
+   *  The click that presses the banner is the gesture the browser needs. */
+  fsaReconnect?: { name: string } | null;
   /** True while a folder is being opened (tree walk + first reads). */
   opening: boolean;
   /** Live progress for folder open / pull — drives the progress block above the tree. */
@@ -37,11 +41,14 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, 
   onRequestDelete: (path: string, isFolder?: boolean) => void;
   onToggleDir: (path: string) => void;
   onToggleSidebar: () => void;
-  /** Open the native OS folder dialog. */
+  /** Open the workspace folder dialog (browser picker or native OS). */
   onImport: () => void;
-  /** Open the native OS file dialog — the file's folder becomes the
-   *  workspace and the file opens. */
+  /** Open the file dialog — the file's folder becomes the workspace
+   *  and the file opens. */
   onOpenFileFromDisk: () => void;
+  /** Re-grant the saved browser-handle workspace's permission (must be
+   *  called from a click — that click IS the permission gesture). */
+  onReconnectFsa?: () => void;
 }) {
   const [adding, setAdding] = useState<Adding | null>(null);
   const [draft, setDraft] = useState("");
@@ -155,7 +162,17 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, opening, 
             />
           </div>
         ) : null}
-        {!root
+        {fsaReconnect ? (
+          <button
+            className="wb-tree-empty muted wb-tree-empty-cta"
+            onClick={onReconnectFsa}
+            title="The browser needs one click to re-grant access to this folder"
+            type="button"
+          >
+            Reconnect “{fsaReconnect.name}” — the browser saved this workspace but needs your click to grant access again.
+          </button>
+        ) : null}
+        {!root && !fsaReconnect
           ? <button className="wb-tree-empty muted wb-tree-empty-cta" disabled={opening} onClick={onImport} type="button">
               Open a folder from your machine to browse and edit its files here — edits save to disk as you go.
             </button>

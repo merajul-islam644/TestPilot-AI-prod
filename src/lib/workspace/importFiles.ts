@@ -15,8 +15,10 @@ export const IMPORT_MAX_FILES = 300;
 export const IMPORT_MAX_FILE_BYTES = 100_000;
 export const IMPORT_MAX_TOTAL_BYTES = 6_000_000;
 
-/** Generated code, VCS internals and build output never belong in the workspace. */
-const SKIP_DIR_NAMES = new Set([
+/** Generated code, VCS internals and build output never belong in the workspace.
+ *  Exported for tree walkers that need the same dir filter per segment
+ *  (the FSA backend's handle walk). */
+export const SKIP_DIR_NAMES = new Set([
   "node_modules", ".git", ".svn", ".hg", "dist", "build", "out", ".next", ".nuxt",
   ".output", ".cache", ".parcel-cache", ".turbo", "coverage", ".nyc_output",
   "venv", ".venv", "env", "__pycache__", ".mypy_cache", ".pytest_cache",

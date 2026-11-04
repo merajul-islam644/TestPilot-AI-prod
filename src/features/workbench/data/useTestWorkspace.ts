@@ -5,8 +5,18 @@
 //
 // The workspace model follows the Lattice workbench exactly: the folder
 // the user picked IS the workspace — every read/write goes to the real
-// file on disk through the runner's /api/workbench routes. There is no
-// stored copy anywhere, so nothing a refresh or a flaky backend can lose.
+// file on disk. There is no stored copy anywhere, so nothing a refresh
+// or a flaky backend can lose.
+//
+// Two transports answer behind one seam (createWorkspaceIo in
+// lib/workspace/fsaWorkspace.ts):
+//   • FSA (File System Access API) — the browser talks to the disk
+//     itself; works on any https origin (dev + deployed) with no local
+//     runner. Chrome/Edge only; the handle persists in IndexedDB and a
+//     saved workspace may need a click to re-grant permission
+//     (fsaReconnect → reconnectFsaWorkspace).
+//   • Runner — the local Node process' /api/workbench routes (absolute
+//     paths, native OS dialogs); the fallback where FSA is missing.
 //
 // Content is LAZY (Lattice parity, and why a refresh no longer feels
 // like a re-import): a folder open loads the tree PATHS only — the one
@@ -30,6 +40,18 @@ import { pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/cli
 import { localFolder } from "../../../lib/workspace/localFolder";
 import type { SearchResponse } from "../../../lib/workspace/localFolder";
 import {
+  clearRootHandle,
+  createWorkspaceIo,
+  ensureFsaPermission,
+  fsaSupported,
+  loadRootHandle,
+  pickDirectory,
+  pickFileWithFolder,
+  queryFsaPermission,
+  saveRootHandle
+} from "../../../lib/workspace/fsaWorkspace";
+import type { FsDirHandle } from "../../../lib/workspace/fsaWorkspace";
+import {
   CODE_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
   isRunnableSpecPath,
@@ -50,23 +72,28 @@ const EDITOR_MAX_FILE_BYTES = 2_000_000;
 
 // The picked folder is remembered per project (Lattice persists its
 // workspace root the same way) so a refresh reopens the same workspace.
+// FSA workspaces also persist their handle in IndexedDB — the localStorage
+// row only carries the folder NAME + which transport owns it.
 const FOLDER_ROOT_PREFIX = "wb-folder-root.v1:";
 const FOLDER_SETTINGS_PREFIX = "wb-folder-settings.v1:";
 
-function readSavedRoot(projectId: string): string | null {
+type SavedRoot = { root: string; mode: "fsa" | "runner" };
+
+function readSavedRoot(projectId: string): SavedRoot | null {
   try {
     const raw = localStorage.getItem(FOLDER_ROOT_PREFIX + projectId);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { root?: unknown };
-    return typeof parsed.root === "string" && parsed.root.length > 0 ? parsed.root : null;
+    const parsed = JSON.parse(raw) as { root?: unknown; mode?: unknown };
+    if (typeof parsed.root !== "string" || parsed.root.length === 0) return null;
+    return { root: parsed.root, mode: parsed.mode === "fsa" ? "fsa" : "runner" };
   } catch {
     return null;
   }
 }
 
-function writeSavedRoot(projectId: string, root: string | null): void {
+function writeSavedRoot(projectId: string, saved: SavedRoot | null): void {
   try {
-    if (root) localStorage.setItem(FOLDER_ROOT_PREFIX + projectId, JSON.stringify({ root, at: Date.now() }));
+    if (saved) localStorage.setItem(FOLDER_ROOT_PREFIX + projectId, JSON.stringify({ ...saved, at: Date.now() }));
     else localStorage.removeItem(FOLDER_ROOT_PREFIX + projectId);
   } catch {
     /* private mode / quota — remembering the folder is best-effort */
@@ -105,8 +132,20 @@ export function useTestWorkspace(project: Project) {
   const loadingRef = useRef<Set<string>>(new Set());
   const [baseURL, setBaseURL] = useState(DEFAULT_BASE_URL);
   const [savedBaseURL, setSavedBaseURL] = useState(DEFAULT_BASE_URL);
-  /** The picked folder — the workspace itself. Null = empty workspace. */
+  /** The picked folder — the workspace itself. Null = empty workspace.
+   *  FSA mode: the folder's NAME (handles carry no absolute path).
+   *  Runner mode: the absolute disk path (unchanged behaviour). */
   const [root, setRoot] = useState<string | null>(null);
+  /** The FSA directory handle behind `root` when the workspace runs on
+   *  the File System Access API (no local runner involved). Null = the
+   *  runner transport owns this workspace. */
+  const [fsaRoot, setFsaRoot] = useState<FsDirHandle | null>(null);
+  /** A saved FSA workspace whose handle needs a click-granted permission
+   *  (browsers won't allow requestPermission without a gesture). The
+   *  explorer shows a reconnect banner for it. */
+  const [fsaReconnect, setFsaReconnect] = useState<{ name: string } | null>(null);
+  /** The transport seam: identical signatures, FSA or runner backend. */
+  const io = useMemo(() => createWorkspaceIo(fsaRoot), [fsaRoot]);
   const [loaded, setLoaded] = useState(false);
   /** True while a folder is being opened (the tree list call). */
   const [opening, setOpening] = useState(false);
@@ -143,8 +182,35 @@ export function useTestWorkspace(project: Project) {
     const url = settings.baseURL || DEFAULT_BASE_URL;
     setBaseURL(url);
     setSavedBaseURL(url);
-    if (saved) {
-      void loadFolder(saved, { announce: false }).then((ok) => {
+    if (saved && saved.mode === "fsa") {
+      // FSA restore: the handle lives in IndexedDB. Permission already
+      // granted → reload silently; "prompt" → a click must grant it, so
+      // surface the reconnect banner instead of pretending files exist.
+      void (async () => {
+        const handle = await loadRootHandle(project.id);
+        if (cancelled) return;
+        if (!handle) {
+          writeSavedRoot(project.id, null);
+          startEmptyWorkspace();
+          return;
+        }
+        const permission = await queryFsaPermission(handle);
+        if (cancelled) return;
+        if (permission === "granted") {
+          const ok = await loadFolder(handle.name, { announce: false }, handle);
+          if (cancelled) return;
+          if (!ok) {
+            await clearRootHandle(project.id);
+            writeSavedRoot(project.id, null);
+            startEmptyWorkspace();
+          }
+        } else {
+          setFsaReconnect({ name: handle.name });
+          startEmptyWorkspace();
+        }
+      })();
+    } else if (saved) {
+      void loadFolder(saved.root, { announce: false }).then((ok) => {
         if (cancelled) return;
         if (!ok) {
           writeSavedRoot(project.id, null);
@@ -224,7 +290,7 @@ export function useTestWorkspace(project: Project) {
     await Promise.all(missing.map(async (path) => {
       loadingRef.current.add(path);
       try {
-        const content = await localFolder.readUserFile({ root, path });
+        const content = await io.readUserFile({ root, path });
         if (content === null) {
           // Deleted out from under the editor (git/another editor):
           // drop the ghost path from the tree.
@@ -251,13 +317,14 @@ export function useTestWorkspace(project: Project) {
       });
     }
     return fetched;
-  }, [root, contents]);
+  }, [root, contents, io]);
 
-  /** Server-side content search (the SPA holds no bulk text anymore). */
+  /** Content search over the transport seam (runner: server-side scan;
+   *  FSA: the same guarded scan against the handle tree). */
   const searchWorkspace = useCallback(async (query: string): Promise<SearchResponse> => {
     if (!root || query.trim().length < 2) return { results: [], truncated: false };
-    return localFolder.search({ root, query });
-  }, [root]);
+    return io.search({ root, query });
+  }, [root, io]);
 
   // ── Open folder ─────────────────────────────────────────────────
   // The Lattice flow, lazy edition: walk the real folder's TREE only
@@ -269,14 +336,19 @@ export function useTestWorkspace(project: Project) {
   /**
    * Open `rootPath` as this project's workspace. Resolves false when the
    * folder is missing/unreadable — the caller must not keep it as root.
+   * `fsaHandle` selects the FSA transport for THIS load (the memoized io
+   * would still point at the previous backend this render — the handle
+   * is the truth, so it rides along explicitly).
    */
-  async function loadFolder(rootPath: string, opts: { announce: boolean }): Promise<boolean> {
+  async function loadFolder(rootPath: string, opts: { announce: boolean }, fsaHandle: FsDirHandle | null = null): Promise<boolean> {
     setOpening(true);
     // A stale reveal (a file created before this open) must not leak
     // into the new session's default tab.
     setCreatedPath(undefined);
     try {
-      const { tree, exists } = await localFolder.listTree({ root: rootPath });
+      const { tree, exists } = fsaHandle
+        ? await createWorkspaceIo(fsaHandle).listTree({ root: rootPath })
+        : await io.listTree({ root: rootPath });
       if (!exists) {
         if (opts.announce) toast.error("Folder not found", { description: rootPath });
         return false;
@@ -294,7 +366,12 @@ export function useTestWorkspace(project: Project) {
       const candidates = found.filter((path) => pathSkipReason(path) === null);
 
       setRoot(rootPath);
-      writeSavedRoot(project.id, rootPath);
+      // The workspace's transport is whoever loaded the tree — set both
+      // here so open/reconnect/restore share one code path and a switch
+      // between FSA and runner workspaces never leaves a stale backend.
+      setFsaRoot(fsaHandle);
+      setFsaReconnect(null);
+      writeSavedRoot(project.id, { root: rootPath, mode: fsaHandle ? "fsa" : "runner" });
       setPaths(candidates);
       setContents({});
       setSavedContents({});
@@ -324,10 +401,26 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
-  /** Native OS folder dialog → open. The only way in — pick a folder,
-   *  it opens. Cancel is a no-op. */
+  /** Folder dialog → open. FSA browsers use the browser's own directory
+   *  picker (works on any https origin, no local runner); the rest fall
+   *  back to the runner's native OS dialog. Cancel is a no-op. */
   async function openFolder(): Promise<void> {
     if (opening) return;
+    if (fsaSupported()) {
+      try {
+        const dir = await pickDirectory();
+        if (!dir) return; // user cancelled
+        await saveRootHandle(project.id, dir);
+        const ok = await loadFolder(dir.name, { announce: true }, dir);
+        if (!ok) await clearRootHandle(project.id);
+      } catch (error) {
+        console.warn("[TestPilot] FSA folder pick failed:", error);
+        toast.error("Folder picker failed", {
+          description: error instanceof Error ? error.message.slice(0, 160) : "The browser refused the directory picker."
+        });
+      }
+      return;
+    }
     try {
       const result = await localFolder.pickFolder();
       if ("path" in result) {
@@ -345,13 +438,41 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
-  /** Native OS file dialog → the file's folder becomes the workspace
-   *  and the file itself opens (VS Code's "Open File", folder-rooted
-   *  edition: a file always lives inside an open workspace here). The
-   *  same import guards apply — a binary/secret-shaped pick is refused
-   *  with the reason before any folder load starts. */
+  /** File dialog → the file's folder becomes the workspace and the file
+   *  itself opens. FSA edition: the file picker, then the directory
+   *  picker anchored inside the file's folder (the API exposes no parent
+   *  handle). The same import guards apply — a binary/secret-shaped pick
+   *  is refused with the reason before any folder load starts. */
   async function openFileFromDisk(): Promise<void> {
     if (opening) return;
+    if (fsaSupported()) {
+      try {
+        const picked = await pickFileWithFolder();
+        if (!picked) return; // user cancelled either dialog
+        const reason = pathSkipReason(picked.file.name);
+        if (reason) {
+          toast.error("This file type cannot be opened", {
+            description: `${picked.file.name} — filtered (${reason})`
+          });
+          return;
+        }
+        await saveRootHandle(project.id, picked.dir);
+        const ok = await loadFolder(picked.dir.name, { announce: true }, picked.dir);
+        if (!ok) {
+          await clearRootHandle(project.id);
+          return;
+        }
+        // Same reveal a fresh-created file gets: the chrome expands the
+        // file's parents and opens its tab.
+        setCreatedPath(picked.file.name);
+      } catch (error) {
+        console.warn("[TestPilot] FSA file pick failed:", error);
+        toast.error("File picker failed", {
+          description: error instanceof Error ? error.message.slice(0, 160) : "The browser refused the file picker."
+        });
+      }
+      return;
+    }
     try {
       const result = await localFolder.pickFile();
       if (!("path" in result)) {
@@ -381,10 +502,39 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
+  /** The saved FSA workspace needs its permission re-granted — the
+   *  explorer's reconnect banner calls this from a real click gesture. */
+  async function reconnectFsaWorkspace(): Promise<void> {
+    const pending = fsaReconnect;
+    if (!pending) return;
+    const handle = await loadRootHandle(project.id);
+    if (!handle) {
+      setFsaReconnect(null);
+      writeSavedRoot(project.id, null);
+      return;
+    }
+    const granted = await ensureFsaPermission(handle);
+    if (!granted) {
+      toast.error("Permission denied", {
+        description: `The browser kept “${handle.name}” locked — pick the folder again to open it.`
+      });
+      return;
+    }
+    const ok = await loadFolder(handle.name, { announce: true }, handle);
+    if (!ok) {
+      await clearRootHandle(project.id);
+      writeSavedRoot(project.id, null);
+      setFsaReconnect(null);
+    }
+  }
+
   /** Close the folder: back to the empty workspace (files stay on disk). */
   function closeFolder(): void {
     writeSavedRoot(project.id, null);
+    void clearRootHandle(project.id);
     setRoot(null);
+    setFsaRoot(null);
+    setFsaReconnect(null);
     setPaths([]);
     setContents({});
     setSavedContents({});
@@ -399,7 +549,7 @@ export function useTestWorkspace(project: Project) {
     if (!root) return;
     setSaving(true);
     try {
-      await localFolder.writeUserFile({ root, path, content: contentOf(path) });
+      await io.writeUserFile({ root, path, content: contentOf(path) });
       setSavedContents((prev) => ({ ...prev, [path]: contentOf(path) }));
       if (baseURL !== savedBaseURL) {
         writeSavedSettings(project.id, baseURL);
@@ -453,7 +603,7 @@ export function useTestWorkspace(project: Project) {
     }
     setSaving(true);
     try {
-      await localFolder.writeUserFile({ root, path: clean, content });
+      await io.writeUserFile({ root, path: clean, content });
       setPaths((prev) => [...prev, clean]);
       setContents((prev) => ({ ...prev, [clean]: content }));
       setSavedContents((prev) => ({ ...prev, [clean]: content }));
@@ -502,7 +652,7 @@ export function useTestWorkspace(project: Project) {
     const created = await createFile(`${clean}/.gitkeep`, "");
     if (created) {
       try {
-        await localFolder.mkdirUserPath({ root, path: clean });
+        await io.mkdirUserPath({ root, path: clean });
       } catch {
         /* writeUserFile already created the parents; mkdir is a formality */
       }
@@ -552,7 +702,7 @@ export function useTestWorkspace(project: Project) {
     }
     setSaving(true);
     try {
-      await localFolder.renameUserPath({ root, oldPath: from, newPath: clean });
+      await io.renameUserPath({ root, oldPath: from, newPath: clean });
       setPaths((prev) => prev.map((path) => renames.get(path) ?? path));
       const retargetKeys = (prev: Record<string, string>): Record<string, string> => {
         const next: Record<string, string> = {};
@@ -601,7 +751,7 @@ export function useTestWorkspace(project: Project) {
         : [target.path]
     );
     try {
-      await localFolder.deleteUserPath({ root, path: target.path });
+      await io.deleteUserPath({ root, path: target.path });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes("not found")) {
@@ -644,7 +794,7 @@ export function useTestWorkspace(project: Project) {
     try {
       const written = new Map<string, string>();
       for (const file of report.files) {
-        await localFolder.writeUserFile({ root, path: file.path, content: file.content });
+        await io.writeUserFile({ root, path: file.path, content: file.content });
         written.set(file.path, file.content);
         setImportProgress({ phase: "writing", done: written.size, total: report.files.length });
       }
@@ -686,7 +836,7 @@ export function useTestWorkspace(project: Project) {
       // What runs is what is on disk: flush every dirty file (and the
       // base URL) first so the executed run matches the editor state.
       for (const path of dirtyPaths) {
-        if (root) await localFolder.writeUserFile({ root, path, content: contentOf(path) });
+        if (root) await io.writeUserFile({ root, path, content: contentOf(path) });
         setSavedContents((prev) => ({ ...prev, [path]: contentOf(path) }));
       }
       if (dirtyPaths.size > 0) appendOutput(`Saved ${dirtyPaths.size} unsaved file(s) before running`);
@@ -765,6 +915,10 @@ export function useTestWorkspace(project: Project) {
     importProgress,
     pendingImport,
     runnerOnline,
+    /** Saved FSA workspace awaiting a click-granted permission — the
+     *  explorer renders a reconnect banner for it. */
+    fsaReconnect,
+    reconnectFsaWorkspace,
     errorText,
     outcome,
     outputLines,

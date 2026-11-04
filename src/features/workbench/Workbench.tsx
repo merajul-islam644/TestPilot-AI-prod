@@ -220,10 +220,12 @@ export function Workbench({ project }: { project: Project }) {
                 activePath={activePath}
                 dirtyPaths={ws.dirtyPaths}
                 expanded={expanded}
+                fsaReconnect={ws.fsaReconnect}
                 importProgress={ws.importProgress}
                 newFileSignal={newFileSignal}
                 onImport={() => void ws.openFolder()}
                 onOpenFileFromDisk={() => void ws.openFileFromDisk()}
+                onReconnectFsa={() => void ws.reconnectFsaWorkspace()}
                 onNewFile={async (path) => {
                   const created = await ws.createFile(path);
                   return created;
