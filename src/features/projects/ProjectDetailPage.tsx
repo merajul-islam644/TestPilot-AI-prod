@@ -17,21 +17,50 @@ import { StatusBadge, SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 import { Tabs } from "../../shared/ui/Tabs";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { ProjectFormModal } from "./ProjectFormModal";
+import { ProjectTestsTab } from "./ProjectTestsTab";
 import { useIssueColumns } from "../issues/issueColumns";
 import { useRunColumns } from "../runs/runColumns";
 import { ProjectIcon } from "./ProjectIcon";
 
-type Tab = "summary" | "runs" | "suites" | "issues" | "activity";
+type Tab = "summary" | "runs" | "suites" | "tests" | "issues" | "activity";
+const TAB_IDS: Tab[] = ["summary", "runs", "suites", "tests", "issues", "activity"];
 const DAY_MS = 86_400_000;
+
+/** The active tab lives in the URL (?tab=…), so a refresh or a shared
+ *  link reopens the same view. Unknown/missing param → Summary. */
+function initialTab(): Tab {
+  try {
+    const param = new URLSearchParams(window.location.search).get("tab");
+    return TAB_IDS.includes(param as Tab) ? (param as Tab) : "summary";
+  } catch {
+    return "summary";
+  }
+}
 
 export function ProjectDetailPage() {
   const { params, navigate } = useRoute();
   const { runs, issues } = useDemoState();
   const { openNewRun } = useShell();
   const { t } = useT();
-  const [tab, setTab] = useState<Tab>("summary");
+  const [tab, setTabState] = useState<Tab>(initialTab);
   const [formOpen, setFormOpen] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  // Tab switches are written into the URL with replaceState (no history
+  // spam): /projects/:id?tab=tests. "summary" is the default and stays
+  // query-free, so the plain project URL always opens the overview.
+  function setTab(next: Tab) {
+    setTabState(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === "summary") url.searchParams.delete("tab");
+      else url.searchParams.set("tab", next);
+      window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+    } catch {
+      /* URL api unavailable — tab still switches, just not recorded */
+    }
+  }
+
   const runColumns = useRunColumns((run) => navigate(`/runs/${run.id}`), { omitProject: true });
   const issueColumns = useIssueColumns((issue) => navigate(`/issues/${issue.id}`), { omitProject: true });
 
@@ -88,6 +117,7 @@ export function ProjectDetailPage() {
     { id: "summary", label: t("projects.tabSummary") },
     { id: "runs", label: t("projects.tabRuns") },
     { id: "suites", label: t("projects.tabSuites") },
+    { id: "tests", label: t("projects.tabTests") },
     { id: "issues", label: t("projects.tabIssues") },
     { id: "activity", label: t("projects.tabActivity") }
   ];
@@ -194,6 +224,8 @@ export function ProjectDetailPage() {
           rows={projectSuites}
         />
       ) : null}
+
+      {tab === "tests" ? <ProjectTestsTab project={project} /> : null}
 
       {tab === "issues" ? (
         projectIssues.length > 0 ? (

@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import * as cloud from "../blocks/data";
-import { projects, suiteById, suites, type Environment, type Issue, type IssueStatus, type Project, type ProjectIcon, type Run } from "./data";
+import { cleanCaseError, runSpecsOnRunner } from "../runner/client";
+import { projects, suiteById, suites, type CaseResult, type Environment, type Issue, type IssueStatus, type Project, type ProjectIcon, type Run, type Suite } from "./data";
 import { translate } from "../i18n/LocalizationProvider";
 import type { TranslationKey } from "../i18n/dictionary";
 
@@ -17,9 +18,11 @@ export type DemoState = {
   status: "loading" | "ready" | "error";
   runs: Run[];
   issues: Issue[];
+  /** Persisted per-case rows from runner-backed runs, grouped by runId on read. */
+  caseResults: CaseResult[];
 };
 
-let state: DemoState = { status: "loading", runs: [], issues: [] };
+let state: DemoState = { status: "loading", runs: [], issues: [], caseResults: [] };
 const listeners = new Set<() => void>();
 const timers = new Map<string, number>();
 let runSequence = 1000;
@@ -54,13 +57,19 @@ async function refresh(): Promise<void> {
       const snapshot = await cloud.loadDomain();
       fillCatalog(projects, snapshot.projects);
       fillCatalog(suites, snapshot.suites);
-      emit({ status: "ready", runs: sortRuns(snapshot.runs), issues: sortIssues(snapshot.issues) });
+      // Runner case rows are secondary: a collection hiccup must not blank the
+      // whole app, so they resolve to [] instead of failing the load.
+      const caseResults = await cloud.listCaseRecords().catch((error) => {
+        console.warn("[TestPilot] CaseResult load failed:", error);
+        return [] as cloud.StoredCase[];
+      });
+      emit({ status: "ready", runs: sortRuns(snapshot.runs), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults) });
     } catch (error) {
       // The exact gateway reason (GraphQL errors ride in HTTP 200 bodies and
       // are unpacked by cloud.assertGateway) must reach the console -- an
       // empty UI with zero diagnostics is undebuggable.
       console.error("[TestPilot] Blocks Data load failed:", error);
-      emit({ status: "error", runs: [], issues: [] });
+      emit({ status: "error", runs: [], issues: [], caseResults: [] });
     } finally {
       refreshInFlight = undefined;
     }
@@ -81,6 +90,12 @@ function fillCatalog<T>(catalog: T[], next: T[]) {
 
 function sortRuns(runs: Run[]): Run[] {
   return [...runs].sort((a, b) => b.startedAt - a.startedAt);
+}
+
+function sortCases(cases: cloud.StoredCase[]): CaseResult[] {
+  return [...cases]
+    .sort((a, b) => (a.runId === b.runId ? a.order - b.order : a.runId.localeCompare(b.runId)))
+    .map((entry) => ({ id: entry.id, name: entry.name, status: entry.status as CaseResult["status"], durationMs: entry.durationMs, error: entry.error || undefined, runId: entry.runId, order: entry.order }));
 }
 
 // Seed order (ISS-101 first) is the display order every page expects; the
@@ -202,6 +217,155 @@ function hash(text: string): number {
   return Math.abs(hash >>> 0) % 100000;
 }
 
+// ---------------------------------------------------------------------------
+// Runner-backed Playwright runs (Tests tab). Unlike the simulated lifecycle
+// above, these execute real specs on the runner service; the run row, the
+// per-case rows and one issue per failure all persist to the gateway.
+// ---------------------------------------------------------------------------
+const PLAYWRIGHT_SUITE_NAME = "Playwright tests";
+
+/** Every runner run files under this suite so the existing suite/run UI works unchanged. */
+async function ensurePlaywrightSuite(projectId: string): Promise<Suite> {
+  const existing = suites.find((entry) => entry.projectId === projectId && entry.name === PLAYWRIGHT_SUITE_NAME);
+  if (existing) return existing;
+  const suite: Suite = {
+    id: `suite-pw-${projectId}`,
+    projectId,
+    name: PLAYWRIGHT_SUITE_NAME,
+    description: "Specs edited and executed from the project's Tests tab.",
+    status: "active",
+    owner: "You",
+    lastUpdatedAt: Date.now()
+  };
+  suites.push(suite);
+  emit({ ...state });
+  try {
+    await cloud.createSuiteRecord(suite);
+  } catch (error) {
+    // The run can proceed without the suite row; the next full load re-lists
+    // whatever the gateway accepted and this method re-creates if missing.
+    console.warn("[TestPilot] Playwright suite create failed:", error);
+  }
+  return suite;
+}
+
+export type PlaywrightRunOutcome = { run: Run; cases: CaseResult[] };
+
+export async function runPlaywrightTests(input: { projectId: string; files: { name: string; content: string }[]; baseURL: string }): Promise<PlaywrightRunOutcome> {
+  const project = projects.find((entry) => entry.id === input.projectId);
+  if (!project) throw new Error("Unknown project");
+  const suite = await ensurePlaywrightSuite(input.projectId);
+
+  const id = `run-pw-${Date.now()}-${++runSequence}`;
+  const now = Date.now();
+  const run: Run = {
+    id,
+    name: `Playwright · ${project.name}`,
+    projectId: input.projectId,
+    suiteId: suite.id,
+    environment: "staging",
+    status: "running",
+    total: 0,
+    passed: 0,
+    failed: 0,
+    durationSec: 0,
+    startedAt: now,
+    triggeredBy: "Playwright runner",
+    browser: "chromium",
+    progress: 0
+  };
+  emit({ ...state, runs: sortRuns([run, ...state.runs]) });
+  void cloud.createRunRecord(run).catch(() => undefined);
+  toast.info(translate("toast.runStarted"), { description: run.name });
+
+  try {
+    const result = await runSpecsOnRunner({
+      name: run.name,
+      baseURL: input.baseURL,
+      files: input.files
+    });
+
+    const cases: CaseResult[] = result.cases.map((entry, index) => ({
+      id: `${id}-c${index}`,
+      name: entry.title,
+      status: entry.status,
+      durationMs: entry.durationMs,
+      error: cleanCaseError(entry.error) || undefined,
+      runId: id,
+      order: index
+    }));
+    const finished: Run = {
+      ...run,
+      status: result.summary.failed > 0 ? "failed" : "passed",
+      total: cases.length,
+      passed: result.summary.passed,
+      failed: result.summary.failed,
+      progress: undefined,
+      durationSec: Math.max(1, Math.round(result.summary.durationMs / 1000))
+    };
+    emit({
+      ...state,
+      runs: sortRuns([finished, ...state.runs.filter((entry) => entry.id !== id)]),
+      caseResults: [...cases, ...state.caseResults]
+    });
+
+    // Persist terminal state, case rows, and one issue per failure (capped so
+    // a broken suite cannot flood the issues board).
+    void cloud.updateRunRecord(finished).catch(() => undefined);
+    void cloud.createCaseRecords(id, input.projectId, cases.map((entry) => ({
+      id: entry.id,
+      runId: id,
+      projectId: input.projectId,
+      name: entry.name,
+      status: entry.status,
+      durationMs: entry.durationMs,
+      error: entry.error ?? "",
+      order: entry.order ?? 0
+    }))).catch((error) => console.warn("[TestPilot] CaseResult persist failed:", error));
+    for (const failedCase of cases.filter((entry) => entry.status === "failed").slice(0, 5)) {
+      createIssueFromCase(input.projectId, finished, failedCase);
+    }
+
+    if (result.summary.failed > 0) toast.error(`${run.name} — ${translate("status.failed")}`, { description: `${result.summary.failed}/${result.summary.total} ${translate("common.failed").toLowerCase()}` });
+    else toast.success(`${run.name} — ${translate("status.passed")}`);
+    return { run: finished, cases };
+  } catch (error) {
+    // Transport-level failure (runner down / timeout): park the run as
+    // cancelled so it does not spin as "running" forever.
+    patchRun(id, {
+      status: "cancelled",
+      progress: undefined,
+      durationSec: Math.max(1, Math.round((Date.now() - now) / 1000))
+    });
+    toast.error(translate("toast.runnerFailed"), {
+      description: error instanceof Error ? error.message.slice(0, 200) : undefined
+    });
+    throw error;
+  }
+}
+
+function createIssueFromCase(projectId: string, run: Run, failedCase: CaseResult) {
+  const now = Date.now();
+  const issue: Issue = {
+    id: `ISS-R-${now.toString(36)}-${++runSequence}`,
+    title: failedCase.name,
+    projectId,
+    runId: run.id,
+    severity: "high",
+    status: "open",
+    message: failedCase.error ?? "Playwright case failed.",
+    steps: [`Spec: ${run.name}`, `Case: ${failedCase.name}`],
+    assignee: "",
+    createdAt: now,
+    updatedAt: now,
+    history: [{ at: now, actor: run.triggeredBy, labelKey: "issue.event.opened" }]
+  };
+  emit({ ...state, issues: sortIssues([issue, ...state.issues]) });
+  void cloud.createIssueRecord(issue).catch((error) => {
+    console.warn("[TestPilot] Issue persist failed:", error);
+  });
+}
+
 export function setIssueStatus(issueId: string, status: IssueStatus, actor = "You") {
   const target = state.issues.find((issue) => issue.id === issueId);
   const labelKey: TranslationKey = status === "resolved" ? "issue.event.resolved" : status === "in_progress" ? "issue.event.started" : "issue.event.reopened";
@@ -289,7 +453,7 @@ export function resetDemoData() {
   for (const key of [...localStorage.keys()]) {
     if (key.startsWith("testpilot:")) localStorage.removeItem(key);
   }
-  emit({ status: "loading", runs: [], issues: [] });
+  emit({ status: "loading", runs: [], issues: [], caseResults: [] });
   toast.info(translate("toast.resetStarted"));
   void (async () => {
     try {
@@ -303,3 +467,37 @@ export function resetDemoData() {
 }
 
 export { suitesForProject } from "./data";
+
+// ---------------------------------------------------------------------------
+// Test workspace file operations (Tests tab). Files are not part of the
+// reactive DemoState -- only the Tests tab reads them -- but every gateway
+// call still goes through the store so components keep one data boundary.
+// ---------------------------------------------------------------------------
+export type WorkspaceFile = { path: string; content: string };
+
+export function loadTestWorkspace(projectId: string): Promise<cloud.StoredWorkspace> {
+  return cloud.loadTestWorkspace(projectId);
+}
+
+export function saveTestFile(input: { projectId: string; path: string; content: string }): Promise<void> {
+  return cloud.saveTestFile(input);
+}
+
+/** Remove one workspace file's stored record (no-op if never stored). */
+export function deleteTestFile(input: { projectId: string; path: string }): Promise<void> {
+  return cloud.deleteTestFile(input);
+}
+
+export function saveWorkspaceSettings(input: { projectId: string; baseURL: string }): Promise<void> {
+  return cloud.saveWorkspaceSettings(input);
+}
+
+/** Import: replaces the project's stored file set with exactly these files.
+ *  onProgress streams the clearing/writing phases to the workbench UI. */
+export function importTestWorkspace(input: {
+  projectId: string;
+  files: WorkspaceFile[];
+  onProgress?: (progress: cloud.ImportProgress) => void;
+}): Promise<void> {
+  return cloud.replaceTestFiles(input);
+}

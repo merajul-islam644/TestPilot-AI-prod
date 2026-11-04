@@ -61,6 +61,9 @@ export type CaseResult = {
   status: CaseStatus;
   durationMs: number;
   error?: string;
+  /** Present on runner-backed cases (store.runPlaywrightTests); absent on simulated ones. */
+  runId?: string;
+  order?: number;
 };
 
 export type IssueSeverity = "critical" | "high" | "medium" | "low";

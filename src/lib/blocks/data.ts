@@ -1,12 +1,12 @@
-// Blocks Data Gateway persistence for the TestPilot domain records. The four
+// Blocks Data Gateway persistence for the TestPilot domain records. The
 // schemas live under blocks/data/schemas and are pushed with the Blocks CLI;
 // every runtime call here goes through the shared SDK client (never a raw
 // fetch). Gateway records are flat field bags identified by ItemId, so each
 // app record carries its logical id in the `key` field and this module keeps
 // key -> ItemId registries for updates. Timestamps are DateTime fields
 // (ISO strings) -- GraphQL Int is 32-bit, so raw epoch milliseconds would
-// overflow. Case-level results are never persisted; they derive from the run
-// id (see ../demo/data.ts).
+// overflow. Simulated runs fabricate their case lists (see ../demo/data.ts);
+// runner-backed runs persist real per-case rows in the CaseResult schema.
 import { blocksClient } from "./client";
 import {
   buildIssues,
@@ -28,11 +28,11 @@ import {
 import type { TranslationKey } from "../i18n/dictionary";
 
 type DataRecord = Record<string, unknown>;
-type SchemaName = "Project" | "Suite" | "Run" | "Issue" | "UserPreference";
+type SchemaName = "Project" | "Suite" | "Run" | "Issue" | "TestSpec" | "CaseResult" | "UserPreference";
 
 // Domain schemas wiped by deleteAllDomain. UserPreference is deliberately
 // excluded: a demo-data reset must not clear the signed-in user's avatar.
-const SCHEMAS: SchemaName[] = ["Project", "Suite", "Run", "Issue"];
+const SCHEMAS: SchemaName[] = ["Project", "Suite", "Run", "Issue", "TestSpec", "CaseResult"];
 
 // Must match the pushed schemas exactly. System fields (ItemId, CreatedDate,
 // CreatedBy, ...) are managed by the gateway and never listed here.
@@ -41,6 +41,8 @@ const FIELDS: Record<SchemaName, string[]> = {
   Suite: ["key", "projectId", "name", "description", "status", "owner", "lastUpdatedAt"],
   Run: ["key", "name", "projectId", "suiteId", "environment", "status", "total", "passed", "failed", "durationSec", "startedAt", "triggeredBy", "browser", "progress"],
   Issue: ["key", "title", "projectId", "runId", "severity", "status", "message", "stepsJson", "assignee", "createdAt", "updatedAt", "historyJson"],
+  TestSpec: ["key", "projectId", "filename", "content", "baseURL", "updatedAt"],
+  CaseResult: ["key", "runId", "projectId", "name", "status", "durationMs", "errorMessage", "sortOrder"],
   UserPreference: ["key", "avatarFileId", "updatedAt"]
 };
 
@@ -51,12 +53,99 @@ function domainCollection(schema: SchemaName) {
   return blocksClient.data.collection<DataRecord>(schema, { fields: [...FIELDS[schema]] });
 }
 
+// The gateway intermittently answers 401 / AUTH_NOT_AUTHENTICATED to requests
+// that carry the exact same session as their 200 neighbours -- identical
+// retries of one call have been seen flip 200 → 200 → 401, and a burst of
+// parallel lists loses a random member. It is a flaky validation hop on the
+// gateway side, not a dead session (the user stays signed in throughout), so
+// these failures are worth a quick bounded retry instead of surfacing as a
+// failed workspace load or a failed import. The bursts are seconds long (an
+// import once took three 401s across ~3s before succeeding on a manual
+// retry), so the schedule spans ~7s: five attempts at 400ms/900ms/2s/3.5s.
+// A genuinely dead session still errors out, just later.
+//
+// Worse, the gateway sometimes ACCEPTS a request and never answers at all
+// (a POST left pending for minutes). The SDK sets no timeout, so the await
+// would hang forever and the Tests tab would show an empty workspace with
+// no error at all. Every call therefore races a timeout, and a timed-out
+// call is retried exactly like a rejected one.
+const TRANSIENT_RETRY_DELAYS_MS = [400, 900, 2_000, 3_500];
+// The import path needs to be stubborn: a degraded gateway span once ate a
+// whole 36-file import (every attempt hung to the timeout, then the final
+// "list timed out" failed the run), and spans have now been observed past
+// 90 seconds. The import budget waits ~80s across 8 attempts with a 20s
+// per-attempt timeout (~4min worst case), so a span has to outlast four
+// minutes to kill an import — nothing client-side can bridge more.
+const IMPORT_RETRY_DELAYS_MS = [1_000, 3_000, 6_000, 10_000, 15_000, 20_000, 25_000];
+const IMPORT_CALL_TIMEOUT_MS = 20_000;
+const GATEWAY_CALL_TIMEOUT_MS = 10_000;
+
+function isTransientFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message.includes("timed out after")) return true;
+  // HTTP2 protocol errors / dropped connections — the browser surfaces them
+  // as generic fetch failures. A request that died in-flight almost never
+  // reached the gateway, so a retry is safe (same trade-off as the hang
+  // retries below: a late orphan write may duplicate a row).
+  if (/failed to fetch|networkerror|network error|err_http|http2/i.test(error.message)) return true;
+  if (error.name === "BlocksApiError" && /\b401\b/.test(error.message)) return true;
+  return /AUTH_NOT_AUTHENTICATED|not authenticated/i.test(error.message);
+}
+
+async function withTransientAuthRetry<T>(
+  what: string,
+  call: () => Promise<T>,
+  retryDelays: number[] = TRANSIENT_RETRY_DELAYS_MS,
+  timeoutMs: number = GATEWAY_CALL_TIMEOUT_MS
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt - 1]));
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${what} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+        call().then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (error) => { clearTimeout(timer); reject(error); }
+        );
+      });
+    } catch (error) {
+      lastError = error;
+      if (!isTransientFailure(error)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+/** Wrap every collection method so all reads/writes ride through the retry.
+ *  Only transient auth blips and gateway hangs retry; other errors propagate
+ *  untouched. A late answer to an abandoned create can duplicate a row (the
+ *  retry writes a fresh record) -- rare, and far cheaper than an app that
+ *  hangs forever. */
+function withTransientAuthRetryWrapped<T extends object>(
+  collection: T,
+  retryDelays: number[] = TRANSIENT_RETRY_DELAYS_MS,
+  timeoutMs: number = GATEWAY_CALL_TIMEOUT_MS
+): T {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(collection)) {
+    if (typeof value !== "function") {
+      wrapped[name] = value;
+      continue;
+    }
+    wrapped[name] = (...args: unknown[]) => withTransientAuthRetry(name, () => (value as (...a: unknown[]) => Promise<unknown>).apply(collection, args), retryDelays, timeoutMs);
+  }
+  return wrapped as T;
+}
+
 const collections: Record<SchemaName, ReturnType<typeof domainCollection>> = {
-  Project: domainCollection("Project"),
-  Suite: domainCollection("Suite"),
-  Run: domainCollection("Run"),
-  Issue: domainCollection("Issue"),
-  UserPreference: domainCollection("UserPreference")
+  Project: withTransientAuthRetryWrapped(domainCollection("Project")),
+  Suite: withTransientAuthRetryWrapped(domainCollection("Suite")),
+  Run: withTransientAuthRetryWrapped(domainCollection("Run")),
+  Issue: withTransientAuthRetryWrapped(domainCollection("Issue")),
+  TestSpec: withTransientAuthRetryWrapped(domainCollection("TestSpec")),
+  CaseResult: withTransientAuthRetryWrapped(domainCollection("CaseResult")),
+  UserPreference: withTransientAuthRetryWrapped(domainCollection("UserPreference"))
 };
 
 // Logical id (`key`) -> gateway ItemId, filled on every full load and on
@@ -66,6 +155,8 @@ const itemIds: Record<SchemaName, Map<string, string>> = {
   Suite: new Map(),
   Run: new Map(),
   Issue: new Map(),
+  TestSpec: new Map(),
+  CaseResult: new Map(),
   UserPreference: new Map()
 };
 
@@ -77,6 +168,22 @@ const DELETE_CHUNK = 10;
 // large one is allowed.
 const PAGE_SIZE = 100;
 const MAX_PAGES = 5;
+// TestSpec pages carry whole file contents, and page latency grows with the
+// CONTENT bytes, not the row count: 100 records answered in ~2s without the
+// content field but took 13s+ (or never answered at all) with it once one
+// project's workspace grew past ~280 files. Small pages keep every response
+// in the fast zone; listRecords fetches the remaining pages in parallel so
+// total wall time stays sane.
+const PAGE_SIZE_BY_SCHEMA: Partial<Record<SchemaName, number>> = { TestSpec: 25 };
+const MAX_PAGES_BY_SCHEMA: Partial<Record<SchemaName, number>> = { TestSpec: 40 };
+
+function pageSizeOf(schema: SchemaName): number {
+  return PAGE_SIZE_BY_SCHEMA[schema] ?? PAGE_SIZE;
+}
+
+function maxPagesOf(schema: SchemaName): number {
+  return MAX_PAGES_BY_SCHEMA[schema] ?? MAX_PAGES;
+}
 
 // ---------------------------------------------------------------------------
 // Response normalization -- the SDK returns untyped envelopes, so every read
@@ -108,6 +215,15 @@ function itemsOf(data: Record<string, unknown>, query: string): DataRecord[] {
   const nested = gateway && typeof gateway === "object" ? (gateway as { items?: unknown }).items : undefined;
   const items = nested ?? (data as { items?: unknown }).items;
   return Array.isArray(items) ? (items as DataRecord[]) : [];
+}
+
+/** totalCount rides next to items and may arrive as a GraphQL Long, i.e. a
+ *  JSON string. Missing/odd values fall back to the items actually read. */
+function totalCountOf(data: Record<string, unknown>, query: string, items: DataRecord[]): number {
+  const gateway = data[query];
+  const raw = gateway && typeof gateway === "object" ? (gateway as { totalCount?: unknown }).totalCount : undefined;
+  const value = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(value) && value >= items.length ? value : items.length;
 }
 
 function recordItemId(record: DataRecord): string | undefined {
@@ -271,33 +387,44 @@ function toIssueRecord(issue: Issue): DataRecord {
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
-async function listRecords(schema: SchemaName): Promise<DataRecord[]> {
-  const all: DataRecord[] = [];
-  for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
-    const response = await collections[schema].list({ pageNo, pageSize: PAGE_SIZE });
-    // The gateway nests results under the operation name (getProjects), not
-    // the bare plural -- looking up "Projects" read [] out of a full response,
-    // which made every load see an empty tenant, reseed and render zero rows.
-    const items = itemsOf(assertGateway(response, `List ${schema}`), `get${queryName(schema)}`);
-    all.push(...items);
-    if (items.length < PAGE_SIZE) break;
-  }
-  return all;
+async function listPage(schema: SchemaName, pageNo: number, pageSize: number, query: string, collection: ReturnType<typeof domainCollection> = collections[schema]): Promise<DataRecord[]> {
+  const response = await collection.list({ pageNo, pageSize });
+  // The gateway nests results under the operation name (getProjects), not
+  // the bare plural -- looking up "Projects" read [] out of a full response,
+  // which made every load see an empty tenant, reseed and render zero rows.
+  return itemsOf(assertGateway(response, `List ${schema}`), query);
+}
+
+async function listRecords(schema: SchemaName, collection: ReturnType<typeof domainCollection> = collections[schema]): Promise<DataRecord[]> {
+  const pageSize = pageSizeOf(schema);
+  const query = `get${queryName(schema)}`;
+  // Page 1 answers first and reports totalCount, which sizes the rest --
+  // so the remaining pages can run concurrently instead of serially
+  // stacking their latencies (the gateway's per-page cost dominates).
+  const firstResponse = assertGateway(await collection.list({ pageNo: 1, pageSize }), `List ${schema}`);
+  const firstItems = itemsOf(firstResponse, query);
+  const total = totalCountOf(firstResponse, query, firstItems);
+  const totalPages = Math.min(maxPagesOf(schema), Math.max(1, Math.ceil(total / pageSize)));
+  if (totalPages === 1) return firstItems;
+  const rest = await Promise.all(
+    Array.from({ length: totalPages - 1 }, (_, index) => listPage(schema, index + 2, pageSize, query, collection))
+  );
+  return [...firstItems, ...rest.flat()];
 }
 
 /**
  * List every record, paging past the app's display cap until a short page
  * says the collection is exhausted. Cleanup paths need this: a collection
- * larger than MAX_PAGES * PAGE_SIZE hides matches from the capped read, and
+ * larger than MAX_PAGES * page size hides matches from the capped read, and
  * records beyond it would silently survive a delete.
  */
 async function listAllRecords(schema: SchemaName): Promise<DataRecord[]> {
+  const pageSize = pageSizeOf(schema);
   const all: DataRecord[] = [];
   for (let pageNo = 1; pageNo <= 50; pageNo++) {
-    const response = await collections[schema].list({ pageNo, pageSize: PAGE_SIZE });
-    const items = itemsOf(assertGateway(response, `List ${schema}`), `get${queryName(schema)}`);
+    const items = await listPage(schema, pageNo, pageSize, `get${queryName(schema)}`);
     all.push(...items);
-    if (items.length < PAGE_SIZE) break;
+    if (items.length < pageSize) break;
   }
   return all;
 }
@@ -376,11 +503,11 @@ async function insertMany(schema: SchemaName, records: DataRecord[]): Promise<vo
     try {
       // BulkActionResponse has no itemId (verified against the live gateway:
       // it rejected exactly that field); acknowledged + totalImpactedData only.
-      const data = assertGateway(await blocksClient.data.graphql({
+      const data = assertGateway(await withTransientAuthRetry(`Bulk insert ${schema}`, () => blocksClient.data.graphql({
         operationName: mutation,
         query: `mutation ${mutation}($input: [${schema}InsertInput!]!) { ${mutation}(input: $input) { acknowledged totalImpactedData } }`,
         variables: { input: chunk }
-      }), `Bulk insert ${schema}`);
+      })), `Bulk insert ${schema}`);
       const result = data[mutation] as { acknowledged?: unknown } | null | undefined;
       if (!result || result.acknowledged === false) {
         throw new Error(`${mutation} was not acknowledged`);
@@ -399,8 +526,11 @@ async function insertMany(schema: SchemaName, records: DataRecord[]): Promise<vo
 
 async function createRecords(schema: SchemaName, records: DataRecord[]): Promise<void> {
   for (let offset = 0; offset < records.length; offset += CREATE_BATCH) {
-    await Promise.all(records.slice(offset, offset + CREATE_BATCH).map((record) =>
-      assertGateway(collections[schema].create(record), `Insert ${schema}`)
+    // assertGateway must see the RESOLVED response: handed the raw promise it
+    // throws "no data" on the first callback and every create after the first
+    // is silently skipped.
+    await Promise.all(records.slice(offset, offset + CREATE_BATCH).map(async (record) =>
+      assertGateway(await collections[schema].create(record), `Insert ${schema}`)
     ));
   }
 }
@@ -429,6 +559,20 @@ export function updateRunRecord(run: Run): Promise<void> {
 
 export function updateIssueRecord(issue: Issue): Promise<void> {
   return patchRecord("Issue", issue.id, toIssueRecord(issue));
+}
+
+export async function createSuiteRecord(suite: Suite): Promise<void> {
+  const data = assertGateway(await collections.Suite.create(toSuiteRecord(suite)), "Insert Suite");
+  const result = data.insertSuite as { itemId?: unknown } | null | undefined;
+  const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
+  if (itemId) itemIds.Suite.set(suite.id, itemId);
+}
+
+export async function createIssueRecord(issue: Issue): Promise<void> {
+  const data = assertGateway(await collections.Issue.create(toIssueRecord(issue)), "Insert Issue");
+  const result = data.insertIssue as { itemId?: unknown } | null | undefined;
+  const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
+  if (itemId) itemIds.Issue.set(issue.id, itemId);
 }
 
 export async function createProjectRecord(project: Project): Promise<void> {
@@ -462,15 +606,15 @@ export async function updateProjectRecord(project: Project): Promise<void> {
  * though they are absent from its mutationSchemas list. Returns the impacted
  * row count -- 0 means nothing matched and the caller can stop re-listing.
  */
-async function deleteManyMatching(schema: SchemaName, where: DataRecord): Promise<number> {
+async function deleteManyMatching(schema: SchemaName, where: DataRecord, retryDelays: number[] = TRANSIENT_RETRY_DELAYS_MS): Promise<number> {
   const mutation = `deleteMany${schema}`;
-  const data = assertGateway(await blocksClient.data.graphql({
+  const data = assertGateway(await withTransientAuthRetry(`Bulk delete ${schema}`, () => blocksClient.data.graphql({
     operationName: mutation,
     query: `mutation ${mutation}($where: ${schema}FilterInput, $input: ${schema}DeleteInput) { ${mutation}(where: $where, input: $input) { acknowledged totalImpactedData } }`,
     // RunDeleteInput.isHardDelete (introspected) -- the flag is REQUIRED on
     // the bulk input, and it is spelled isHardDelete, not hardDelete.
     variables: { where, input: { isHardDelete: true } }
-  }), `Bulk delete ${schema}`);
+  }), retryDelays), `Bulk delete ${schema}`);
   const result = data[mutation] as { acknowledged?: unknown; totalImpactedData?: unknown } | null | undefined;
   if (!result || result.acknowledged === false) {
     throw new Error(`${mutation} was not acknowledged`);
@@ -509,7 +653,7 @@ async function deleteByRelist(schema: SchemaName, matches: (record: DataRecord) 
  * delete never half-fails silently.
  */
 export async function deleteProjectRecord(projectId: string): Promise<void> {
-  for (const schema of ["Suite", "Run", "Issue"] as SchemaName[]) {
+  for (const schema of ["Suite", "Run", "Issue", "TestSpec", "CaseResult"] as SchemaName[]) {
     try {
       for (let pass = 0; pass < 50; pass++) {
         const impacted = await deleteManyMatching(schema, { projectId });
@@ -556,6 +700,217 @@ export async function deleteAllDomain(): Promise<void> {
     }
     itemIds[schema].clear();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Test workspace files (the project Tests tab). Every file of an imported
+// codebase -- or a hand-written spec -- is one TestSpec record: key =
+// "<projectId>:<path>", filename = the workspace-relative path. The v1
+// single-spec record (key = projectId, one file per project) keeps working:
+// listTestFiles maps it to a file entry by its filename and saving that path
+// upgrades the record to the new key. Workspace-level settings (base URL)
+// ride on a dedicated record whose path is SETTINGS_PATH, so file records
+// stay purely file-shaped. Lists are small enough to read whole and filter
+// client-side.
+// ---------------------------------------------------------------------------
+export type StoredFile = { path: string; content: string };
+export type StoredWorkspace = { files: StoredFile[]; baseURL: string };
+
+const SETTINGS_PATH = "__workspace__";
+const settingsKeyOf = (projectId: string) => `${projectId}:${SETTINGS_PATH}`;
+const fileKeyOf = (projectId: string, path: string) => `${projectId}:${path}`;
+
+export async function loadTestWorkspace(projectId: string): Promise<StoredWorkspace> {
+  const records = await listRecords("TestSpec");
+  const files: StoredFile[] = [];
+  const seenPaths = new Set<string>();
+  let baseURL = "";
+  for (const record of records) {
+    if (asString(record.projectId) !== projectId) continue;
+    if (asString(record.key) === settingsKeyOf(projectId)) {
+      baseURL = asString(record.content);
+      continue;
+    }
+    const path = asString(record.filename);
+    if (!path || seenPaths.has(path)) continue;
+    seenPaths.add(path);
+    files.push({ path, content: asString(record.content) });
+    // v1 stored the base URL on the spec record itself; seed from it when no
+    // dedicated settings record exists yet.
+    if (!baseURL && asString(record.key) === projectId) baseURL = asString(record.baseURL);
+  }
+  return { files, baseURL };
+}
+
+export async function saveTestFile(input: { projectId: string; path: string; content: string }): Promise<void> {
+  const key = fileKeyOf(input.projectId, input.path);
+  const payload: DataRecord = {
+    key,
+    projectId: input.projectId,
+    filename: input.path,
+    content: input.content,
+    baseURL: "",
+    updatedAt: iso(Date.now())
+  };
+  // Update by remembered ItemId, else find it by key or v1 filename match
+  // (which also upgrades a legacy record to the new key); create when absent.
+  let itemId = itemIds.TestSpec.get(key);
+  if (!itemId) {
+    const records = await listRecords("TestSpec");
+    itemId = records
+      .filter((record) =>
+        asString(record.projectId) === input.projectId &&
+        (asString(record.key) === key || (asString(record.key) === input.projectId && asString(record.filename) === input.path)))
+      .map(recordItemId)
+      .find((id): id is string => Boolean(id));
+  }
+  if (itemId) {
+    itemIds.TestSpec.set(key, itemId);
+    assertGateway(await collections.TestSpec.update(itemId, payload), "Update TestSpec");
+    return;
+  }
+  const data = assertGateway(await collections.TestSpec.create(payload), "Insert TestSpec");
+  const result = data.insertTestSpec as { itemId?: unknown } | null | undefined;
+  const created = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
+  if (created) itemIds.TestSpec.set(key, created);
+}
+
+/**
+ * Delete one workspace file's record. No-op when the row is already
+ * gone (the tree may hold a file the gateway never stored, e.g. the
+ * unsaved starter spec).
+ */
+export async function deleteTestFile(input: { projectId: string; path: string }): Promise<void> {
+  const key = fileKeyOf(input.projectId, input.path);
+  let itemId = itemIds.TestSpec.get(key);
+  if (!itemId) {
+    const records = await listRecords("TestSpec");
+    itemId = records
+      .filter((record) =>
+        asString(record.projectId) === input.projectId &&
+        (asString(record.key) === key || (asString(record.key) === input.projectId && asString(record.filename) === input.path)))
+      .map(recordItemId)
+      .find((id): id is string => Boolean(id));
+  }
+  if (!itemId) return;
+  assertGateway(await collections.TestSpec.delete(itemId), "Delete TestSpec");
+  itemIds.TestSpec.delete(key);
+}
+
+/** Workspace settings live on a dedicated record that never enters the tree. */
+export async function saveWorkspaceSettings(input: { projectId: string; baseURL: string }): Promise<void> {
+  await saveTestFile({ projectId: input.projectId, path: SETTINGS_PATH, content: input.baseURL });
+}
+
+/** Live import state surfaced in the explorer and the status bar, so a
+ *  long import (36 files ≈ 30s on the flaky gateway) is never silent. */
+export type ImportProgress = { phase: "clearing" | "writing" | "reading"; done: number; total: number };
+
+/**
+ * Import: replace the project's whole file set in one go. Delete-then-create
+ * keeps the stored tree identical to the imported one (no ghost files left
+ * over from a previous workspace).
+ *
+ * Every gateway write goes strictly one at a time with a short gap. Bursty
+ * parallel batches were what tipped the gateway into its HTTP2-error/hang
+ * spans, which then killed whole imports mid-flight — serialized writes are
+ * slower but survive. Each write carries the import-sized retry budget, and
+ * onProgress reports the clearing/writing phases as they advance.
+ */
+export async function replaceTestFiles(input: {
+  projectId: string;
+  files: StoredFile[];
+  onProgress?: (progress: ImportProgress) => void;
+}): Promise<void> {
+  const IMPORT_WRITE_GAP_MS = 200;
+  const report = (phase: ImportProgress["phase"], done: number, total: number) =>
+    input.onProgress?.({ phase, done, total });
+  const gap = () => new Promise((resolve) => setTimeout(resolve, IMPORT_WRITE_GAP_MS));
+  // A dedicated TestSpec collection with the import-sized retry budget: the
+  // degraded gateway spans outlast the normal budget, and an import is
+  // exactly the moment to be stubborn.
+  const specs = withTransientAuthRetryWrapped(domainCollection("TestSpec"), IMPORT_RETRY_DELAYS_MS, IMPORT_CALL_TIMEOUT_MS);
+
+  report("clearing", 0, 0);
+  // The gateway has no deleteManyTestSpec mutation (bulk delete 400s
+  // deterministically — only Suite/Run/Issue/Project have one), so imports
+  // go straight to the reliable path: list this project's rows, delete
+  // them one by one. For an empty workspace this is a single list call.
+  const existing = await listRecords("TestSpec", specs);
+  const staleIds = existing
+    .filter((record) => asString(record.projectId) === input.projectId)
+    .map(recordItemId)
+    .filter((id): id is string => Boolean(id));
+  for (const id of staleIds) {
+    assertGateway(await specs.delete(id), "Delete TestSpec");
+    await gap();
+  }
+  for (const key of [...itemIds.TestSpec.keys()]) {
+    if (key.startsWith(`${input.projectId}:`)) itemIds.TestSpec.delete(key);
+  }
+
+  const files = input.files.filter((file) => file.path && file.path !== SETTINGS_PATH);
+  let created = 0;
+  for (const file of files) {
+    const key = fileKeyOf(input.projectId, file.path);
+    const data = assertGateway(await specs.create({
+      key,
+      projectId: input.projectId,
+      filename: file.path,
+      content: file.content,
+      baseURL: "",
+      updatedAt: iso(Date.now())
+    }), `Insert TestSpec ${file.path}`);
+    const result = data.insertTestSpec as { itemId?: unknown } | null | undefined;
+    const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
+    if (itemId) itemIds.TestSpec.set(key, itemId);
+    created += 1;
+    report("writing", created, files.length);
+    await gap();
+  }
+}
+
+export type StoredCase = {
+  id: string;
+  runId: string;
+  projectId: string;
+  name: string;
+  status: string;
+  durationMs: number;
+  error: string;
+  order: number;
+};
+
+export async function createCaseRecords(runId: string, projectId: string, cases: StoredCase[]): Promise<void> {
+  for (let offset = 0; offset < cases.length; offset += CREATE_BATCH) {
+    await Promise.all(cases.slice(offset, offset + CREATE_BATCH).map(async (entry) =>
+      assertGateway(await collections.CaseResult.create({
+        key: entry.id,
+        runId,
+        projectId,
+        name: entry.name,
+        status: entry.status,
+        durationMs: entry.durationMs,
+        errorMessage: entry.error,
+        sortOrder: entry.order
+      }), "Insert CaseResult")
+    ));
+  }
+}
+
+/** Every persisted case row; the store groups them by run for the run pages. */
+export async function listCaseRecords(): Promise<StoredCase[]> {
+  const records = await listRecords("CaseResult");
+  return records.map((record, index) => ({
+    id: asString(record.key),
+    runId: asString(record.runId),
+    projectId: asString(record.projectId),
+    name: asString(record.name),
+    status: asString(record.status, "failed"),
+    durationMs: asInt(record.durationMs),
+    error: asString(record.errorMessage),
+    order: asInt(record.sortOrder, index)
+  }));
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import fs from "node:fs";
+import svgr from "vite-plugin-svgr";
 import { defineConfig, loadEnv } from "vite";
 
 // VITE_BLOCKS_DEV_HOST: set this in .env to your project's real domain
@@ -19,7 +20,14 @@ export default defineConfig(({ mode }) => {
     : undefined;
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      // `?react` turns an .svg import into a React component — the
+      // workbench Explorer renders the Material Icon Theme artwork
+      // (see src/features/workbench/icons/) through these components
+      // so icons size via props instead of <img> round-trips.
+      svgr()
+    ],
     server: {
       // Vite blocks unrecognized Host headers by default (DNS-rebinding
       // protection) -- without this, a custom domain 404s with "Blocked

@@ -1,0 +1,14 @@
+{
+  "name": "testpilot-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.64.1",
+    "express": "^5.3.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.22.0"
+  }
+}

@@ -1,4 +1,9 @@
-﻿@tailwind base;
+﻿/* VS Code codicons — fallback glyphs for the workbench's file/folder
+   icons (workbench.css) when Material artwork has no match. Must
+   precede the tailwind directives so postcss-import hoists it. */
+@import "@vscode/codicons/dist/codicon.css";
+
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 

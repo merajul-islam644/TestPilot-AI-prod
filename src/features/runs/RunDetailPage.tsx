@@ -17,12 +17,21 @@ const BROWSER_KEYS: Record<Run["browser"], string> = { chromium: "Chromium", web
 
 export function RunDetailPage() {
   const { params, navigate } = useRoute();
-  const { runs, issues } = useDemoState();
+  const { runs, issues, caseResults } = useDemoState();
   const { t } = useT();
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   const run = runs.find((entry) => entry.id === params.runId);
-  const cases = useMemo(() => (run ? buildRunCases(run) : []), [run]);
+  // Runner-backed runs carry persisted case rows; simulated ones fall back to
+  // the deterministic generator so both render through the same table.
+  const realCases = useMemo(
+    () => caseResults.filter((entry) => entry.runId === run?.id).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+    [caseResults, run]
+  );
+  const cases = useMemo(
+    () => (run ? (realCases.length > 0 ? realCases : buildRunCases(run)) : []),
+    [run, realCases]
+  );
   const linkedIssue = run ? issues.find((issue) => issue.runId === run.id) : undefined;
   const project = run ? projectById(run.projectId) : undefined;
   const suite = run ? suiteById(run.suiteId) : undefined;
