@@ -1,5 +1,6 @@
 import express from "express";
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -19,6 +20,34 @@ const execFileAsync = promisify(execFile);
 const RUNNER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PLAYWRIGHT_CLI = path.join(RUNNER_ROOT, "node_modules", "@playwright", "test", "cli.js");
 const PORT = Number(process.env.PORT || 9090);
+
+// ---------------------------------------------------------------------------
+// `testpilot-runner://` protocol handler — the "Start server" button.
+// A website can never launch a local program, but Windows CAN on its
+// behalf once a custom protocol is registered (the same trick Zoom and
+// vscode:// use). Registration is per-user (HKCU — no admin), idempotent,
+// and refreshed on every boot so a moved repo keeps working. After the
+// user has run the agent ONCE, the app's button alone can start it.
+// ---------------------------------------------------------------------------
+// The key name IS the protocol scheme Windows looks up — it must match
+// the URL the app navigates to (testpilot-runner://start), hyphen and
+// all. Lookup is case-insensitive, so this lowercase spelling is fine.
+const PROTOCOL_KEY = "HKCU\\Software\\Classes\\testpilot-runner";
+
+async function registerProtocolHandler() {
+  if (os.platform() !== "win32" || process.env.TESTPILOT_NO_PROTOCOL === "1") return;
+  const launcher = path.join(RUNNER_ROOT, "start-detached.mjs");
+  const command = `"${process.execPath}" "${launcher}" "%1"`;
+  try {
+    await execFileAsync("reg", ["add", PROTOCOL_KEY, "/ve", "/t", "REG_SZ", "/d", "URL:TestPilot Runner", "/f"]);
+    await execFileAsync("reg", ["add", PROTOCOL_KEY, "/v", "URL Protocol", "/t", "REG_SZ", "/d", "", "/f"]);
+    await execFileAsync("reg", ["add", `${PROTOCOL_KEY}\\shell\\open\\command`, "/ve", "/t", "REG_SZ", "/d", command, "/f"]);
+    console.log("[TestPilot] testpilot-runner:// protocol registered — the app's Start server button can launch the agent");
+  } catch (error) {
+    console.warn("[TestPilot] protocol registration skipped:", String(error?.message || error).slice(0, 120));
+  }
+}
+
 const MAX_FILES = 20;
 const MAX_FILE_BYTES = 200_000;
 const MAX_TOTAL_BYTES = 4_000_000;
@@ -31,12 +60,36 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:5173"
 ]);
 
+// Deployed app origins count too: any https page on slsblx.com (prod,
+// preview deploys, future environments). Echoed per-origin — NEVER "*",
+// because /pair hands the pairing code to whoever CORS allows, and "*"
+// would hand it to every website in the user's browser.
+function originAllowed(origin) {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:"
+      && (url.hostname === "slsblx.com" || url.hostname.endsWith(".slsblx.com"));
+  } catch {
+    return false;
+  }
+}
+
+// Pairing code ("connect this machine"): the app fetches it once from
+// /pair and must send it on every terminal WebSocket. The code never
+// leaves this machine's loopback except through the app's CORS-locked
+// routes, so a random website in the user's browser can neither read it
+// (CORS) nor use it (it isn't in their page) — no drive-by shells.
+// TESTPILOT_PAIR_CODE overrides it (tests / scripted setups).
+const PAIR_CODE = process.env.TESTPILOT_PAIR_CODE
+  || `${randomBytes(2).toString("hex").toUpperCase()}-${randomBytes(2).toString("hex").toUpperCase()}`;
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  if (origin && originAllowed(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -53,6 +106,10 @@ let activeRuns = 0;
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, runner: "testpilot-runner", version: "0.1.0", busy: activeRuns > 0 });
+});
+
+app.get("/pair", (_req, res) => {
+  res.json({ ok: true, code: PAIR_CODE });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1103,9 +1160,26 @@ function collectCases(suites) {
 
 const server = app.listen(PORT, () => {
   console.log(`[testpilot-runner] listening on http://localhost:${PORT}`);
+  void registerProtocolHandler();
 });
 
 // Terminal panel: a real PTY (node-pty) streamed to xterm.js over the
 // /api/terminal/shell WebSocket — see terminal-pty.mjs.
-registerTerminal(app, server);
+registerTerminal(app, server, { pairCode: PAIR_CODE });
+
+// "Stop server" (the status-bar chip): the app asks the agent to exit.
+// Same door as the terminal WebSocket — the pairing code, which a
+// random website can never read (/pair is CORS-locked to the app's own
+// origins). Graceful-ish: reply first, then exit; the exit hook in
+// terminal-pty sweeps the child shells so nothing is left behind.
+app.post("/api/shutdown", (req, res) => {
+  const body = req.body ?? {};
+  if (!PAIR_CODE || String(body.code ?? "") !== PAIR_CODE) {
+    res.status(401).json({ ok: false, error: "pairing code required" });
+    return;
+  }
+  res.json({ ok: true, stopping: true });
+  console.log("[TestPilot] shutdown accepted via /api/shutdown — exiting");
+  setTimeout(() => process.exit(0), 250);
+});
 

@@ -1,9 +1,12 @@
 import { useState } from "react";
+import { Globe, Megaphone, Receipt, ShoppingCart, Smartphone } from "lucide-react";
 import { createProject, updateProject } from "../../lib/demo/store";
 import type { Project, ProjectIcon } from "../../lib/demo/data";
 import type { TranslationKey } from "../../lib/i18n/dictionary";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { Modal } from "../../shared/ui/Modal";
+import { Select } from "../../shared/ui/select";
+import type { SelectItem } from "../../shared/ui/select";
 
 const ICON_KEYS: ProjectIcon[] = ["globe", "cart", "phone", "megaphone", "receipt"];
 const ICON_LABELS: Record<ProjectIcon, TranslationKey> = {
@@ -12,6 +15,13 @@ const ICON_LABELS: Record<ProjectIcon, TranslationKey> = {
   megaphone: "icon.megaphone",
   phone: "icon.phone",
   receipt: "icon.receipt"
+};
+const ICON_GLYPHS: Record<ProjectIcon, React.ReactNode> = {
+  globe: <Globe size={14} />,
+  cart: <ShoppingCart size={14} />,
+  phone: <Smartphone size={14} />,
+  megaphone: <Megaphone size={14} />,
+  receipt: <Receipt size={14} />
 };
 
 // Create/edit form for projects. The store call is optimistic -- the card
@@ -51,11 +61,16 @@ export function ProjectFormModal({ onClose, project }: { onClose: () => void; pr
         </label>
         <label className="form-field">
           <span>{t("projects.form.icon")}</span>
-          <select onChange={(event) => setIcon(event.target.value as ProjectIcon)} value={icon}>
-            {ICON_KEYS.map((key) => (
-              <option key={key} value={key}>{t(ICON_LABELS[key])}</option>
-            ))}
-          </select>
+          <Select
+            className="w-full"
+            items={ICON_KEYS.map((key) => ({
+              value: key,
+              label: t(ICON_LABELS[key]),
+              icon: <span className="text-[hsl(var(--muted-foreground))]">{ICON_GLYPHS[key]}</span>
+            }))}
+            onChange={(value) => setIcon(value as ProjectIcon)}
+            value={icon}
+          />
         </label>
         <label className="form-field" style={{ gridColumn: "1 / -1" }}>
           <span>{t("projects.form.description")}</span>

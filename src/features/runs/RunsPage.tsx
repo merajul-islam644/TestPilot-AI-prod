@@ -9,6 +9,7 @@ import { useDemoState } from "../../lib/demo/store";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
+import { Select } from "../../shared/ui/select";
 import { RUN_STATUS_KEYS } from "./runColumns";
 import { useRunColumns } from "./runColumns";
 
@@ -50,18 +51,24 @@ export function RunsPage() {
           <input onChange={(event) => setQuery(event.target.value)} placeholder={t("runs.searchPlaceholder")} value={query} />
         </label>
         <div className="toolbar-actions">
-          <select aria-label={t("common.project")} className="inline-select" onChange={(event) => setProjectFilter(event.target.value)} value={projectFilter}>
-            <option value="">{t("runs.filterProject")}</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
-          <select aria-label={t("common.status")} className="inline-select" onChange={(event) => setStatusFilter(event.target.value as RunStatus | "")} value={statusFilter}>
-            <option value="">{t("runs.filterStatus")}</option>
-            {(Object.keys(RUN_STATUS_KEYS) as RunStatus[]).map((status) => (
-              <option key={status} value={status}>{t(RUN_STATUS_KEYS[status])}</option>
-            ))}
-          </select>
+          <Select
+            ariaLabel={t("common.project")}
+            items={[
+              { value: "", label: t("runs.filterProject") },
+              ...projects.map((project) => ({ value: project.id, label: project.name }))
+            ]}
+            onChange={setProjectFilter}
+            value={projectFilter}
+          />
+          <Select
+            ariaLabel={t("common.status")}
+            items={[
+              { value: "", label: t("runs.filterStatus") },
+              ...(Object.keys(RUN_STATUS_KEYS) as RunStatus[]).map((status) => ({ value: status, label: t(RUN_STATUS_KEYS[status]) }))
+            ]}
+            onChange={(value) => setStatusFilter(value as RunStatus | "")}
+            value={statusFilter}
+          />
         </div>
       </div>
 

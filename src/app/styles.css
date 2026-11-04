@@ -340,14 +340,14 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .toolbar-actions { align-items: center; display: flex; gap: 8px; }
 .search-box { align-items: center; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); color: hsl(var(--low-emphasis)); display: flex; gap: 8px; max-width: 340px; padding: 0 12px; transition: border-color 0.15s ease; width: 100%; }
 .search-box:has(input:focus) { border-color: hsl(var(--primary)); }
-.search-box input, .form-field input, .form-field select, .form-field textarea { background: transparent; border: 0; color: hsl(var(--foreground)); font: inherit; height: 38px; outline: none; width: 100%; }
+.search-box input, .form-field input, .form-field textarea { background: transparent; border: 0; color: hsl(var(--foreground)); font: inherit; height: 38px; outline: none; width: 100%; }
 .form-field textarea { height: auto; min-height: 72px; padding: 8px 10px; resize: vertical; }
 .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .filter-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 12px; }
 .form-field { display: grid; gap: 6px; }
 .form-field > span { color: hsl(var(--muted-foreground)); font-size: 13px; font-weight: 500; }
 .form-field > span .req { color: hsl(var(--destructive)); }
-.form-field input, .form-field select, .form-field textarea { border: 1px solid hsl(var(--border)); border-radius: var(--radius); padding: 0 10px; transition: border-color 0.15s ease; }
+.form-field input, .form-field textarea { border: 1px solid hsl(var(--border)); border-radius: var(--radius); padding: 0 10px; transition: border-color 0.15s ease; }
 .form-field textarea { padding: 8px 10px; }
 .form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: hsl(var(--primary)); }
 .form-field .field-error { color: hsl(var(--destructive)); font-size: 12.5px; }
@@ -658,8 +658,6 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .health-row-name .project-icon { height: 26px; width: 26px; border-radius: 8px; }
 .health-row-health { color: hsl(var(--muted-foreground)); flex-shrink: 0; font-size: 12.5px; white-space: nowrap; }
 .health-row-rate { color: hsl(var(--muted-foreground)); flex-shrink: 0; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
-.inline-select { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); color: hsl(var(--foreground)); font: inherit; font-size: 13.5px; height: 36px; padding: 0 10px; transition: border-color 0.15s ease; }
-.inline-select:focus { border-color: hsl(var(--primary)); outline: none; }
 .progress-row { align-items: center; display: flex; gap: 14px; }
 .failure-list { display: grid; gap: 12px; }
 .failure-card { border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); padding: 14px 16px; }

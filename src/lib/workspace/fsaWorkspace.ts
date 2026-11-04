@@ -18,7 +18,7 @@
 // lack showDirectoryPicker — fsaSupported() gates every entry point, and
 // those browsers keep the runner flow unchanged.
 
-import { SKIP_DIR_NAMES, pathSkipReason } from "./importFiles";
+import { SKIP_DIR_NAMES, isWorkspaceRootName, pathSkipReason } from "./importFiles";
 import { localFolder } from "./localFolder";
 import type { FolderNode, SearchLine, SearchResponse } from "./localFolder";
 
@@ -123,6 +123,49 @@ export async function ensureFsaPermission(handle: FsDirHandle): Promise<boolean>
   return (await permissioned.requestPermission({ mode: "readwrite" })) === "granted";
 }
 
+// ── Workspace-root validation ────────────────────────────────────
+// A TestPilot workspace is an e2e/playwright folder. Picking anything
+// else scans INSIDE the pick: the shallowest e2e/playwright folder there
+// becomes the workspace root (only that folder + its contents open).
+// Nothing found → null and the caller refuses the pick with an error.
+
+const ROOT_SCAN_MAX_DEPTH = 5;
+
+export type ResolvedRoot = { root: FsDirHandle; innerPath: string };
+
+/**
+ * Validate a picked folder as a Playwright workspace root:
+ *   • its own name (case-insensitive) is e2e/playwright → open it as-is;
+ *   • otherwise a breadth-first scan (shallowest match wins, skipping
+ *     SKIP_DIR_NAMES noise, 5 levels deep) finds the first e2e/playwright
+ *     folder inside it — that child handle becomes the root, so the
+ *     picked repo's other files never enter the workspace;
+ *   • none → null (caller shows the error; nothing is opened).
+ */
+export async function resolveWorkspaceRoot(picked: FsDirHandle): Promise<ResolvedRoot | null> {
+  if (isWorkspaceRootName(picked.name)) return { root: picked, innerPath: "" };
+  type Level = { dir: FsDirHandle; path: string };
+  let level: Level[] = [{ dir: picked, path: "" }];
+  for (let depth = 0; depth < ROOT_SCAN_MAX_DEPTH && level.length > 0; depth += 1) {
+    const next: Level[] = [];
+    for (const { dir, path } of level) {
+      const children: Level[] = [];
+      for await (const [name, child] of dir.entries()) {
+        if (child.kind !== "directory" || SKIP_DIR_NAMES.has(name)) continue;
+        const childPath = path ? `${path}/${name}` : name;
+        if (isWorkspaceRootName(name)) return { root: child as FsDirHandle, innerPath: childPath };
+        children.push({ dir: child as FsDirHandle, path: childPath });
+      }
+      // Alphabetical within a level so multiple matches resolve the same
+      // way every time; breadth-first already guarantees shallowest wins.
+      children.sort((a, b) => a.dir.name.localeCompare(b.dir.name));
+      next.push(...children);
+    }
+    level = next;
+  }
+  return null;
+}
+
 // ── Handle persistence (IndexedDB) ───────────────────────────────
 // FSA handles are structured-cloneable but NOT JSON — IndexedDB is the
 // only home. Keyed per project so each project remembers its own folder,
@@ -169,13 +212,12 @@ export async function saveRootHandle(projectId: string, handle: FsDirHandle): Pr
 }
 
 export async function loadRootHandle(projectId: string): Promise<FsDirHandle | null> {
-  try {
-    const handle = await withStore("readonly", (store) => requestToPromise(store.get(projectId) as IDBRequest<FsDirHandle | undefined>));
-    return handle ?? null;
-  } catch (error) {
-    console.warn("[TestPilot] Workspace handle restore failed:", error);
-    return null;
-  }
+  // A MISSING key is a real answer: this project never had a workspace,
+  // or the user closed it — null. A STORAGE ERROR is not: IndexedDB can
+  // hiccup for a moment (mid-reload, storage pressure), and callers must
+  // NOT read that as "no workspace" and forget it, so it throws.
+  const handle = await withStore("readonly", (store) => requestToPromise(store.get(projectId) as IDBRequest<FsDirHandle | undefined>));
+  return handle ?? null;
 }
 
 export async function clearRootHandle(projectId: string): Promise<void> {

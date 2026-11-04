@@ -6,6 +6,7 @@ import { startRun } from "../../lib/demo/store";
 import { getDefaultEnvironment } from "../../shared/useWorkspaceName";
 import type { TranslationKey } from "../../lib/i18n/dictionary";
 import { useT } from "../../lib/i18n/LocalizationProvider";
+import { Select } from "../../shared/ui/select";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "sandbox"];
 const ENV_KEYS: Record<Environment, TranslationKey> = {
@@ -47,36 +48,43 @@ export function NewRunModal({ onClose }: { onClose: () => void }) {
       <div className="form-grid">
         <label className="form-field">
           <span>{t("newRun.project")} <span className="req">*</span></span>
-          <select
-            onChange={(event) => {
-              setProjectId(event.target.value);
+          <Select
+            className="w-full"
+            items={[
+              { value: "", label: t("newRun.selectProject") },
+              ...projects.map((project) => ({ value: project.id, label: project.name }))
+            ]}
+            onChange={(value) => {
+              setProjectId(value);
               setSuiteId("");
             }}
             value={projectId}
-          >
-            <option value="">{t("newRun.selectProject")}</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
+          />
         </label>
         <label className="form-field">
           <span>{t("newRun.suite")} <span className="req">*</span></span>
-          <select disabled={!projectId} onChange={(event) => setSuiteId(event.target.value)} value={suiteId}>
-            <option value="">{projectId && availableSuites.length === 0 ? t("newRun.noSuites") : t("newRun.selectSuite")}</option>
-            {availableSuites.map((suite) => (
-              <option key={suite.id} value={suite.id}>{suite.name}</option>
-            ))}
-          </select>
+          <Select
+            className="w-full"
+            disabled={!projectId}
+            items={[
+              { value: "", label: projectId && availableSuites.length === 0 ? t("newRun.noSuites") : t("newRun.selectSuite") },
+              ...availableSuites.map((suite) => ({ value: suite.id, label: suite.name }))
+            ]}
+            onChange={setSuiteId}
+            value={suiteId}
+          />
         </label>
         <label className="form-field">
           <span>{t("newRun.env")} <span className="req">*</span></span>
-          <select onChange={(event) => setEnvironment(event.target.value as Environment)} value={environment}>
-            <option value="">{t("newRun.selectEnv")}</option>
-            {ENVIRONMENTS.map((env) => (
-              <option key={env} value={env}>{t(ENV_KEYS[env])}</option>
-            ))}
-          </select>
+          <Select
+            className="w-full"
+            items={[
+              { value: "", label: t("newRun.selectEnv") },
+              ...ENVIRONMENTS.map((env) => ({ value: env, label: t(ENV_KEYS[env]) }))
+            ]}
+            onChange={(value) => setEnvironment(value as Environment)}
+            value={environment}
+          />
         </label>
         <label className="form-field">
           <span>{t("newRun.name")} <span className="field-hint">({t("common.optional")})</span></span>

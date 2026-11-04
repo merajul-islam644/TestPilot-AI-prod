@@ -198,14 +198,19 @@ function wireSocketToRecord(socket, rec, resumed) {
 }
 
 async function attachShellToSocket(socket, opts) {
-  const cwd = path.resolve(opts.cwd || APP_ROOT);
-  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-    throw new Error(`cwd is not a directory: ${cwd}`);
-  }
+  // The client may hint a cwd (the open workspace's disk path). If the
+  // hint no longer exists (folder moved/deleted), fall back to the app
+  // root instead of refusing — a stale hint shouldn't brick the shell.
+  const hinted = opts.cwd ? path.resolve(opts.cwd) : null;
+  const hintedOk = hinted !== null && existsSync(hinted) && statSync(hinted).isDirectory();
+  if (opts.cwd && !hintedOk) console.log(`[terminal] cwd hint unusable, falling back to app root: ${opts.cwd}`);
+  const cwd = hintedOk ? hinted : APP_ROOT;
 
-  // Terminals are PROJECT-SCOPED: each project keeps its own shell
-  // process and working directory, so two projects never share state.
-  const key = `${opts.projectId || "default"}\u0000${opts.terminalId ?? "main"}`;
+  // Terminals are PROJECT-SCOPED, and the folder is part of the shell's
+  // identity: keying by cwd as well (Lattice's workspaceId:cwd:terminalId
+  // contract) guarantees a shell can never reattach across a folder
+  // change — a new root always means a fresh spawn inside that root.
+  const key = `${opts.projectId || "default"}\u0000${cwd}\u0000${opts.terminalId ?? "main"}`;
   // Serialize: wait out any spawn already running for this terminal.
   while (spawnsInFlight.has(key)) {
     await spawnsInFlight.get(key);
@@ -306,34 +311,38 @@ async function attachShellToSocket(socket, opts) {
   }
 }
 
-// Shell switch: the client stops the current PTY before reopening with
-// the new shellId — otherwise the registry would just reattach to the
-// old shell. Also usable as a plain "kill my terminal" endpoint.
+// Shell switch / folder switch: the client stops the current PTY before
+// reopening with the new shellId or cwd — otherwise the registry would
+// just reattach to the old shell. The registry keys by cwd too, so this
+// stops EVERY shell of this project+terminal slot (all folders).
 function stopPersistentShell(projectId, terminalId) {
-  const key = `${projectId || "default"}\u0000${terminalId ?? "main"}`;
-  const rec = persistentShells.get(key);
-  if (!rec) return { ok: true, pid: null };
+  const prefix = `${projectId || "default"}\u0000`;
+  const suffix = `\u0000${terminalId ?? "main"}`;
+  const matches = [...persistentShells.entries()].filter(([key]) => key.startsWith(prefix) && key.endsWith(suffix));
+  if (matches.length === 0) return { ok: true, pid: null };
 
-  rec.stopRequested = true;
-  const pid = rec.pid;
-  console.log(`[terminal] stop key=${key} pid=${pid}`);
+  let pid = null;
+  for (const [, rec] of matches) {
+    pid = rec.pid;
+    console.log(`[terminal] stop key=${rec.id} pid=${pid}`);
 
-  for (const ws of [...rec.listeners]) {
-    safeSend(ws, { type: "exit", code: null, reason: "stopped_by_user" });
-    try {
-      ws.close(1000, "stopped_by_user");
-    } catch {
-      /* already closed */
+    for (const ws of [...rec.listeners]) {
+      safeSend(ws, { type: "exit", code: null, reason: "stopped_by_user" });
+      try {
+        ws.close(1000, "stopped_by_user");
+      } catch {
+        /* already closed */
+      }
     }
+    rec.listeners.clear();
+    try {
+      rec.pty.kill();
+    } catch {
+      /* already gone */
+    }
+    rec.exited = true;
+    persistentShells.delete(rec.id);
   }
-  rec.listeners.clear();
-  try {
-    rec.pty.kill();
-  } catch {
-    /* already gone */
-  }
-  rec.exited = true;
-  persistentShells.delete(key);
   return { ok: true, pid };
 }
 
@@ -341,7 +350,8 @@ function stopPersistentShell(projectId, terminalId) {
 // HTTP + WS wiring
 // ---------------------------------------------------------------------------
 
-export function registerTerminal(app, server) {
+export function registerTerminal(app, server, opts = {}) {
+  const { pairCode = "" } = opts;
   app.get("/api/terminal/shells", (_req, res) => {
     res.json({ ok: true, shells: listShells(), defaultCwd: APP_ROOT });
   });
@@ -356,6 +366,15 @@ export function registerTerminal(app, server) {
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "", "http://localhost");
     if (url.pathname !== "/api/terminal/shell") return;
+    // WebSocket has no CORS — every website in the user's browser can
+    // OPEN this URL. The pairing code is the door: only the page that
+    // read it from /pair (CORS-locked to the app's own origins) can.
+    // No code configured → open (compat with older frontends).
+    if (pairCode && url.searchParams.get("code") !== pairCode) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       attachShellToSocket(ws, {
         projectId: url.searchParams.get("projectId") || "",

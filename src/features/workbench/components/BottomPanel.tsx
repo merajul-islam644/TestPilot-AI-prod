@@ -4,22 +4,30 @@
 // under a pass/fail summary strip.
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Eraser, TerminalSquare, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eraser, Power, TerminalSquare, X } from "lucide-react";
+import { toast } from "sonner";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
 import { useRoute } from "../../../app/router/routes";
 import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
 import { DataTable } from "../../../shared/ui/DataTable";
+import { Select } from "../../../shared/ui/select";
 import { StatusBadge } from "../../../shared/ui/StatusBadge";
 import { formatMs } from "../../../lib/format";
 import type { PanelTab } from "../state/workbenchStore";
 import { readStoredShell, writeStoredShell, TerminalView } from "./TerminalView";
+import { fetchRunnerPairCode } from "../../../lib/runner/client";
 
 type ShellDescriptor = { id: string; label: string; available: boolean; resolvedPath: string | null };
 
-export function BottomPanel({ tab, projectId, outputLines, onClearOutput, maximized, onToggleMaximize, outcome, runnerOnline, runnerUrl, onTabChange, onClose }: {
+export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, maximized, onToggleMaximize, outcome, runnerOnline, runnerUrl, onTabChange, onClose }: {
   tab: PanelTab;
   /** Terminals are scoped per project — each project gets its own shell. */
   projectId: string;
+  /** The open workspace's root — its real disk path when the folder
+   *  came through the agent (runner), or just its name for a browser
+   *  picker (FSA) workspace. The terminal watches it: a folder change
+   *  restarts the shell in the new root, Lattice-style. */
+  root: string | null;
   /** Chronological runner log lines ([HH:MM:SS] prefixed). */
   outputLines: string[];
   onClearOutput: () => void;
@@ -39,9 +47,50 @@ export function BottomPanel({ tab, projectId, outputLines, onClearOutput, maximi
   // installed here; the user's pick persists in localStorage.
   const [shells, setShells] = useState<ShellDescriptor[]>([]);
   const [shell, setShell] = useState<string>(() => readStoredShell() ?? "");
+  // "Stop server" (terminal tab, next to the badge): the counterpart of
+  // the ConnectCard's "Start server" — both live where the user already
+  // manages the terminal. Two-step arm so a stray click can't kill a
+  // terminal running `npm run dev`: first click arms, second (within
+  // 3s) fires the agent's pairing-gated shutdown endpoint; the
+  // liveness probe flips the UI back to offline once it's gone.
+  const [armStop, setArmStop] = useState(false);
+  const armTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (armTimerRef.current !== null) window.clearTimeout(armTimerRef.current);
+  }, []);
+  async function stopServer() {
+    if (!armStop) {
+      setArmStop(true);
+      armTimerRef.current = window.setTimeout(() => setArmStop(false), 3000);
+      return;
+    }
+    if (armTimerRef.current !== null) window.clearTimeout(armTimerRef.current);
+    setArmStop(false);
+    const code = await fetchRunnerPairCode();
+    if (!code) {
+      toast.error("Could not reach the server to stop it", { description: "It may already be off — the status flips within a few seconds." });
+      return;
+    }
+    try {
+      const response = await fetch(`${runnerUrl}/api/shutdown`, {
+        body: JSON.stringify({ code }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      toast.success("Server stopped");
+    } catch {
+      toast.error("Could not stop the server", { description: "It may already be off — the status flips within a few seconds." });
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
+    // The agent often comes online AFTER this panel mounted (the
+    // ConnectCard flow). runnerOnline sits in the deps so the flip
+    // re-runs the fetch — otherwise a catalog fetch that failed at
+    // mount would leave the picker on "Loading…" forever.
+    if (runnerOnline === false) return;
     void fetch(`${runnerUrl}/api/terminal/shells`)
       .then((response) => (response.ok ? response.json() : null))
       .then((body: { shells?: ShellDescriptor[] } | null) => {
@@ -60,7 +109,7 @@ export function BottomPanel({ tab, projectId, outputLines, onClearOutput, maximi
     return () => {
       cancelled = true;
     };
-  }, [runnerUrl]);
+  }, [runnerUrl, runnerOnline]);
 
   function onShellChange(id: string) {
     setShell(id);
@@ -106,30 +155,47 @@ export function BottomPanel({ tab, projectId, outputLines, onClearOutput, maximi
           </button>
         </span>
         <span className="wb-panel-side">
-          <span className={`badge ${runnerOnline ? "badge-passed" : runnerOnline === false ? "badge-failed" : "badge-neutral"}`}>
-            <span className={`health-dot ${runnerOnline ? "ok" : ""}`} />
-            {runnerOnline === false ? t("tests.runnerOffline") : t("tests.runnerOnline")}
-          </span>
+          {tab === "terminal" && runnerOnline === true ? (
+            <button
+              className={`wb-panel-stop${armStop ? " armed" : ""}`}
+              onClick={() => void stopServer()}
+              title={armStop ? "Click again to stop — any running terminal session will end" : "Stop the local server (the terminal's engine)"}
+              type="button"
+            >
+              <Power size={12} />
+              {armStop ? "Stop server — sure?" : "Stop server"}
+            </button>
+          ) : null}
+          {runnerOnline !== undefined ? (
+            <span
+              className={`badge ${runnerOnline ? "badge-passed" : "badge-neutral"}`}
+              title={runnerOnline ? runnerUrl : "Optional local helper — only the integrated terminal needs it. This workspace reads and writes files through the browser."}
+            >
+              <span className={`health-dot ${runnerOnline ? "ok" : ""}`} />
+              {runnerOnline ? t("tests.runnerOnline") : t("tests.runnerOff")}
+            </span>
+          ) : null}
           {tab === "output" ? (
             <button aria-label="Clear output" className="wb-icon-btn" disabled={outputLines.length === 0} onClick={onClearOutput} title="Clear output" type="button">
               <Eraser size={13} />
             </button>
           ) : null}
-          {tab === "terminal" ? (
-            <select
-              aria-label="Shell"
-              className="wb-term-shell"
-              onChange={(event) => onShellChange(event.target.value)}
+          {tab === "terminal" && runnerOnline !== false ? (
+            <Select
+              ariaLabel="Shell"
+              items={[
+                ...(shells.length === 0 ? [{ value: "", label: "Loading…" }] : []),
+                ...shells.map((s) => ({
+                  value: s.id,
+                  label: s.available ? s.label : `${s.label} (not installed)`,
+                  disabled: !s.available
+                }))
+              ]}
+              onChange={onShellChange}
+              size="sm"
               title="Shell"
               value={shell}
-            >
-              {shells.length === 0 ? <option value="">Loading…</option> : null}
-              {shells.map((s) => (
-                <option disabled={!s.available} key={s.id} value={s.id}>
-                  {s.label}{s.available ? "" : " (not installed)"}
-                </option>
-              ))}
-            </select>
+            />
           ) : null}
           <button aria-label={maximized ? "Restore panel size" : "Maximize panel"} className="wb-icon-btn" onClick={onToggleMaximize} title={maximized ? "Restore panel size" : "Maximize panel"} type="button">
             {maximized ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
@@ -160,7 +226,7 @@ export function BottomPanel({ tab, projectId, outputLines, onClearOutput, maximi
             )}
           </div>
         ) : tab === "terminal" ? (
-          <TerminalView projectId={projectId} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shellId={shell} />
+          <TerminalView projectId={projectId} root={root} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shellId={shell} />
         ) : hasOutcome && outcome ? (
           <div className="wb-results">            <div className="wb-results-summary">
               <span className="wb-results-pill pass">✓ {outcome.run.passed} passed</span>

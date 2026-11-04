@@ -27,6 +27,14 @@ export const SKIP_DIR_NAMES = new Set([
   "test-results", "playwright-report"
 ]);
 
+/** A valid TestPilot workspace root must BE an e2e/playwright folder — or
+ *  any folder that CONTAINS one (that inner folder becomes the root).
+ *  Case-insensitive; shared by the FSA and runner open flows. */
+export const WORKSPACE_ROOT_NAMES: readonly string[] = ["e2e", "playwright"];
+export function isWorkspaceRootName(name: string): boolean {
+  return WORKSPACE_ROOT_NAMES.includes(name.toLowerCase());
+}
+
 const BINARY_EXTENSIONS = new Set([
   "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "tif", "tiff",
   "woff", "woff2", "ttf", "otf", "eot",

@@ -19,7 +19,9 @@ export const DropdownMenuContent = forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        "z-50 min-w-[220px] overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--popover))] p-1.5 text-[hsl(var(--foreground))] shadow-lg",
+        // Above the app's modal backdrop (z-80): dropdown menus are used
+        // inside modals too. Below the command palette (z-100).
+        "z-[90] min-w-[220px] overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--popover))] p-1.5 text-[hsl(var(--foreground))] shadow-lg",
         "data-[state=open]:animate-[blocks-menu-in_0.12s_ease-out]",
         className
       )}

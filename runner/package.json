@@ -2,6 +2,9 @@
   "name": "testpilot-runner",
   "private": true,
   "type": "module",
+  "bin": {
+    "testpilot-runner": "server.mjs"
+  },
   "scripts": {
     "start": "node server.mjs"
   },

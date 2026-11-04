@@ -15,12 +15,15 @@
 //     alive keyed by cwd+terminalId, so `npm run dev` survives a
 //     remount. Only a real shell exit (exit / Ctrl+C) ends it.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Check, Copy, Power, TerminalSquare } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import "@xterm/xterm/css/xterm.css";
+import { fetchRunnerPairCode } from "../../../lib/runner/client";
+import { readSavedRoot } from "../data/useTestWorkspace";
 
 export type ShellId = string;
 
@@ -73,6 +76,70 @@ function b64Encode(s: string): string {
   }
 }
 
+/** The one-liner that starts the agent on any machine (npm installs it
+ *  straight from the public repo — no clone, no checkout). */
+const CONNECT_COMMAND = "npx -y github:merajul-islam644/TestPilot-AI-prod#path:runner";
+
+/** The terminal tab's offline state — an onboarding card, not an error:
+ *  a website can never open a shell by itself, so the card hands the
+ *  user the one command that starts the agent on THEIR machine. The
+ *  "Start server" button fires the agent's registered protocol handler
+ *  (testpilot-runner://) — after the user has run the command below
+ *  once, this button alone starts the agent; Windows just asks for
+ *  permission. The liveness probe retries every few seconds, so the
+ *  panel pairs with the agent automatically the moment it's up. */
+function ConnectCard({ runnerUrl }: { runnerUrl: string }) {
+  const [copied, setCopied] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(CONNECT_COMMAND);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard refused — the text stays selectable */
+    }
+  };
+  const startServer = () => {
+    setStarting(true);
+    // Windows shows its own confirm dialog here; the probe flips the
+    // panel to connected once the agent is up. On machines where the
+    // protocol isn't registered yet (first time), nothing happens —
+    // the command below stays the first-time path.
+    try {
+      window.location.href = "testpilot-runner://start";
+    } catch {
+      /* unknown protocol — some browsers just ignore it */
+    }
+    window.setTimeout(() => setStarting(false), 6000);
+  };
+  return (
+    <div className="wb-connect">
+      <TerminalSquare className="wb-connect-icon" size={20} />
+      <p className="wb-connect-title">Connect this machine</p>
+      <button className="wb-connect-start" disabled={starting} onClick={startServer} title="Starts the local agent through the testpilot-runner:// handler (registered on first run)" type="button">
+        <Power size={13} />
+        {starting ? "Starting server…" : "Start server"}
+      </button>
+      <p className="wb-connect-body">
+        The terminal is a real shell on your machine — no website can open
+        one by itself. Run the command below once (PowerShell or CMD) to
+        register it; after that this button alone starts the server:
+      </p>
+      <div className="wb-connect-cmd">
+        <code>{CONNECT_COMMAND}</code>
+        <button className="wb-icon-btn wb-connect-copy" onClick={() => void copy()} title="Copy command" type="button">
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+        </button>
+      </div>
+      <p className="wb-connect-note">
+        Have the repo instead? <code>npm start</code> inside <code>runner/</code> works the same
+        (<span className="mono">{runnerUrl}</span>). Checking every few seconds…
+      </p>
+    </div>
+  );
+}
+
 function readScrollback(projectId: string): string | null {
   try {
     return localStorage.getItem(`${SCROLLBACK_KEY}:${projectId}`);
@@ -97,13 +164,29 @@ function dropScrollback(projectId: string): void {
   }
 }
 
-export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
+/** VS Code parity: the shell starts in the OPEN WORKSPACE folder — but
+ *  only when its disk path is actually known, i.e. a workspace opened
+ *  through the agent's own folder dialog (mode "runner"). A browser
+ *  picker (FSA) workspace never reveals its path — the browser hides it
+ *  for security — so those shells start at the app root. Read fresh on
+ *  every connect so a newly opened workspace applies from the next
+ *  terminal (re)connect on. */
+function terminalCwdParam(projectId: string): string {
+  const saved = readSavedRoot(projectId);
+  if (!saved || saved.mode !== "runner") return "";
+  return `&cwd=${encodeURIComponent(saved.root)}`;
+}
+
+export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root }: {
   runnerUrl: string;
   runnerOnline: boolean | undefined;
   shellId: ShellId;
   /** Terminals are project-scoped: shell process and scrollback are
    *  keyed by project so two projects never share a session. */
   projectId: string;
+  /** The open workspace's root (real disk path for agent-picked
+   *  folders). A change restarts the shell in the new root. */
+  root: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -114,6 +197,14 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
   // Tracks the previous shellId so the WS effect can tell "first open"
   // from "shell switch" (the latter resets the buffer).
   const prevShellRef = useRef<string | null>(null);
+  // Tracks the previous workspace root so opening a different folder
+  // restarts the shell in the NEW root — Lattice parity (VS Code also
+  // restarts its terminals when the workspace changes). undefined
+  // means "this effect hasn't run yet".
+  const prevRootRef = useRef<string | null | undefined>(undefined);
+  // The offline ConnectCard renders no xterm container — the mount
+  // effect must re-run (and create it) when the agent comes online.
+  const offline = runnerOnline === false;
 
   // Mount xterm ONCE; the WS effect below owns connect/reconnect.
   useEffect(() => {
@@ -206,8 +297,9 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
       serializeRef.current = null;
     };
     // projectId keys the scrollback record — a different project is a
-    // different terminal identity.
-  }, [projectId]);
+    // different terminal identity. `offline` re-runs the mount when the
+    // ConnectCard hands the slot back to the real xterm container.
+  }, [projectId, offline]);
 
   // Connect / reconnect whenever the runner URL, project, or the picked
   // shell changes. First run (mount) goes through the same path as a switch.
@@ -218,6 +310,13 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
 
     const isShellSwitch = prevShellRef.current !== null && prevShellRef.current !== shellId;
     prevShellRef.current = shellId;
+    // A different folder means a different working directory: the old
+    // PTY must be stopped, or the server's registry would reattach us
+    // to the shell still sitting in the previous folder. A first mount
+    // (undefined → whatever) never tears down — a page refresh must
+    // reattach to its running shell, keeping the session.
+    const isRootChange = prevRootRef.current !== undefined && prevRootRef.current !== root;
+    prevRootRef.current = root;
 
     let disposed = false;
     const dataSubs: { dispose(): void }[] = [];
@@ -242,10 +341,11 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
 
     /** Stops the old PTY on a shell switch, then opens the new WS. */
     async function connect(term: Terminal) {
-      if (isShellSwitch) {
-        // New shell = new PTY. Stop the running one first, or the
-        // registry would just reattach us to the old shell. The scrollback
-        // dies with it: drop the persisted buffer and clear the canvas.
+      if (isShellSwitch || isRootChange) {
+        // New shell OR new folder = new PTY. Stop the running one first,
+        // or the registry would just reattach us to the old shell (still
+        // sitting in the previous folder). The scrollback dies with it:
+        // drop the persisted buffer and clear the canvas.
         try {
           await fetch(`${runnerUrl}/api/terminal/stop`, {
             body: JSON.stringify({ projectId, terminalId: "main" }),
@@ -260,8 +360,14 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
         term.reset();
       }
 
-      const wsUrl = `${runnerUrl.replace(/^http/, "ws")}/api/terminal/shell?projectId=${encodeURIComponent(projectId)}&shellId=${encodeURIComponent(shellId)}&cols=${term.cols}&rows=${term.rows}`;
-      const ws = new WebSocket(wsUrl);
+      const wsUrl = `${runnerUrl.replace(/^http/, "ws")}/api/terminal/shell?projectId=${encodeURIComponent(projectId)}&shellId=${encodeURIComponent(shellId)}&cols=${term.cols}&rows=${term.rows}${terminalCwdParam(projectId)}`;
+      // The agent gates the shell WS behind its pairing code (WebSocket
+      // has no CORS) — fetch it fresh on every connect so an agent
+      // restart with a new code still pairs. Unreachable or older agent
+      // → connect without one (the agent refuses it only when it has one).
+      const pairCode = await fetchRunnerPairCode();
+      if (disposed) return;
+      const ws = new WebSocket(pairCode ? `${wsUrl}&code=${encodeURIComponent(pairCode)}` : wsUrl);
       if (disposed) {
         ws.close();
         return;
@@ -300,6 +406,12 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
         }
       };
 
+      // A refused pairing (agent restarted → new code) or a dead agent
+      // lands here — say so instead of a silent black screen.
+      ws.onclose = () => {
+        if (!disposed) term.write("\r\n\u001b[2m[Terminal disconnected — it reconnects on the next tab open]\u001b[0m\r\n");
+      };
+
       // Keystrokes → PTY stdin (base64 keeps arbitrary bytes lossless).
       dataSubs.push(term.onData((data) => {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: "input", data: b64Encode(data) }));
@@ -318,14 +430,10 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId }: {
       handleRef.current?.close();
       handleRef.current = null;
     };
-  }, [runnerUrl, shellId, runnerOnline, projectId]);
+  }, [runnerUrl, shellId, runnerOnline, projectId, root]);
 
-  if (runnerOnline === false) {
-    return (
-      <p className="wb-output-hint muted">
-        Terminal needs the local runner (<span className="mono">{runnerUrl}</span>) and it looks offline. Start the runner, then reopen this tab.
-      </p>
-    );
+  if (offline) {
+    return <ConnectCard runnerUrl={runnerUrl} />;
   }
 
   return (

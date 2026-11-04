@@ -10,6 +10,7 @@ import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
+import { Select } from "../../shared/ui/select";
 import { ISSUE_STATUS_KEYS, SEVERITY_KEYS, useIssueColumns } from "./issueColumns";
 
 export function IssuesPage() {
@@ -48,18 +49,24 @@ export function IssuesPage() {
           <input onChange={(event) => setQuery(event.target.value)} placeholder={t("issues.searchPlaceholder")} value={query} />
         </label>
         <div className="toolbar-actions">
-          <select aria-label={t("common.severity")} className="inline-select" onChange={(event) => setSeverityFilter(event.target.value as IssueSeverity | "")} value={severityFilter}>
-            <option value="">{t("issues.filterSeverity")}</option>
-            {(Object.keys(SEVERITY_KEYS) as IssueSeverity[]).map((severity) => (
-              <option key={severity} value={severity}>{t(SEVERITY_KEYS[severity])}</option>
-            ))}
-          </select>
-          <select aria-label={t("common.project")} className="inline-select" onChange={(event) => setProjectFilter(event.target.value)} value={projectFilter}>
-            <option value="">{t("runs.filterProject")}</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
+          <Select
+            ariaLabel={t("common.severity")}
+            items={[
+              { value: "", label: t("issues.filterSeverity") },
+              ...(Object.keys(SEVERITY_KEYS) as IssueSeverity[]).map((severity) => ({ value: severity, label: t(SEVERITY_KEYS[severity]) }))
+            ]}
+            onChange={(value) => setSeverityFilter(value as IssueSeverity | "")}
+            value={severityFilter}
+          />
+          <Select
+            ariaLabel={t("common.project")}
+            items={[
+              { value: "", label: t("runs.filterProject") },
+              ...projects.map((project) => ({ value: project.id, label: project.name }))
+            ]}
+            onChange={setProjectFilter}
+            value={projectFilter}
+          />
         </div>
       </div>
 

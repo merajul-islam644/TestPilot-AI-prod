@@ -137,8 +137,8 @@ export function Workbench({ project }: { project: Project }) {
   // plain editor instead of showing two identical panes.
   const activeIsDiff = activePath !== "" && diffTabs.includes(activePath);
   useEffect(() => {
-    if (activeIsDiff && activePath && !ws.dirtyPaths.has(activePath)) workbenchStore.exitDiff(activePath);
-  }, [activeIsDiff, activePath, ws.dirtyPaths]);
+    if (activeIsDiff && activePath && !ws.gitDirtyPaths.has(activePath)) workbenchStore.exitDiff(activePath);
+  }, [activeIsDiff, activePath, ws.gitDirtyPaths]);
 
   // Keyboard layer: VS Code's core chords. Capture phase so they beat
   // the browser (Ctrl+S) and Monaco's own keymap.
@@ -208,7 +208,7 @@ export function Workbench({ project }: { project: Project }) {
       <div className="wb-frame">
         <ActivityBar
           active={sidebarView}
-          changesCount={ws.dirtyPaths.size}
+          changesCount={ws.gitDirtyPaths.size}
           onSelect={(view: SidebarView) => workbenchStore.setSidebarView(view)}
           visible={sidebarVisible}
         />
@@ -218,7 +218,7 @@ export function Workbench({ project }: { project: Project }) {
             {sidebarView === "explorer" ? (
               <ExplorerView
                 activePath={activePath}
-                dirtyPaths={ws.dirtyPaths}
+                dirtyPaths={ws.gitDirtyPaths}
                 expanded={expanded}
                 fsaReconnect={ws.fsaReconnect}
                 importProgress={ws.importProgress}
@@ -253,7 +253,8 @@ export function Workbench({ project }: { project: Project }) {
               <SourceControlView
                 busy={ws.saving || ws.opening}
                 contentOf={ws.contentOf}
-                dirtyPaths={ws.dirtyPaths}
+                dirtyPaths={ws.gitDirtyPaths}
+                onMarkCommitted={(files) => void ws.markCommitted(files)}
                 onOpenDiff={(path) => workbenchStore.openDiff(path)}
                 onRevert={ws.revertFile}
                 onSaveAll={() => void ws.saveAll()}
@@ -287,6 +288,7 @@ export function Workbench({ project }: { project: Project }) {
               onClose={(path) => workbenchStore.closeTab(path)}
               onSelect={(path) => workbenchStore.setActivePath(path)}
               paths={openTabs}
+              saveState={activePath ? ws.saveStates[activePath] : undefined}
               saving={ws.saving}
             />
           ) : null}
@@ -295,7 +297,7 @@ export function Workbench({ project }: { project: Project }) {
             <EditorHost
               diff={activeIsDiff}
               loading={activePath ? !ws.isLoaded(activePath) : false}
-              originalValue={ws.savedContentOf(activePath)}
+              originalValue={ws.gitContentOf(activePath)}
               onExitDiff={() => workbenchStore.exitDiff(activePath)}
               onChange={(content) => ws.setContent(activePath, content)}
               onCursor={setCursor}
@@ -327,6 +329,7 @@ export function Workbench({ project }: { project: Project }) {
             outcome={ws.outcome}
             outputLines={ws.outputLines}
             projectId={project.id}
+            root={ws.root}
             runnerOnline={ws.runnerOnline}
             runnerUrl={ws.runnerUrl}
             tab={panelTab}
@@ -340,10 +343,12 @@ export function Workbench({ project }: { project: Project }) {
         filesCount={ws.paths.length}
         importProgress={ws.importProgress}
         language={language}
+        onOpenScm={() => workbenchStore.setSidebarView("scm")}
+        root={ws.root}
         runnableCount={ws.runnableCount}
         runnerOnline={ws.runnerOnline}
         runnerUrl={ws.runnerUrl}
-        root={ws.root}
+        scmChanges={ws.gitDirtyPaths.size}
       />
 
       {paletteMode ? (

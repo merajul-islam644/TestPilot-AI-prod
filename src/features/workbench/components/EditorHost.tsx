@@ -1,18 +1,21 @@
 // Monaco host for the workbench: one editor instance that swaps
 // per-path models (via `path`), tracks the app's manual/auto theme,
-// and reports cursor position for the status bar.
+// and reports cursor position for the status bar. The instance also
+// registers itself in editorActions so the tab strip's undo/redo
+// buttons can drive it.
 //
 // When `diff` is set (a file opened from the Source Control changes
-// list), it renders Monaco's DiffEditor instead -- saved-on-disk
-// content on the left, the live edits on the right, editable there
-// exactly like VS Code's SCM diff. The "Open File" button leaves the
-// diff back to the plain editor.
+// list), it renders Monaco's DiffEditor instead -- the SCM baseline on
+// the left, the live edits on the right, editable there exactly like
+// VS Code's SCM diff. The "Open File" button leaves the diff back to
+// the plain editor.
 
 import { useEffect, useState } from "react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { X } from "lucide-react";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
 import { languageOf } from "../model/treeModel";
+import { setActiveEditor } from "../lib/editorActions";
 
 /** Track the app's manual/auto theme so the editor matches the shell. */
 function useMonacoTheme(): "vs" | "vs-dark" {
@@ -50,7 +53,7 @@ const EDITOR_OPTIONS = {
 export function EditorHost({ path, value, originalValue, diff, loading, onExitDiff, onChange, onCursor }: {
   path: string;
   value: string;
-  /** Saved-on-disk content; the left side of the diff view. */
+  /** Baseline (loaded / pulled / pushed) content; the left side of the diff view. */
   originalValue?: string;
   /** Render as a diff editor (SCM click) instead of a plain editor. */
   diff?: boolean;
@@ -65,13 +68,21 @@ export function EditorHost({ path, value, originalValue, diff, loading, onExitDi
   const { t } = useT();
   const monacoTheme = useMonacoTheme();
 
+  // The tab strip's undo/redo buttons drive the registry's editor.
+  // Clear it when the plain editor goes away (diff mode, no open tab)
+  // so a stale instance never answers a click.
+  useEffect(() => {
+    if (diff) setActiveEditor(null);
+    return () => setActiveEditor(null);
+  }, [diff]);
+
   return (
     <div className="wb-editor">
       {diff ? (
         <>
           <div className="wb-diff-bar">
             <span className="wb-diff-label">
-              <span className="wb-diff-side">Saved on disk</span>
+              <span className="wb-diff-side">Baseline</span>
               <span className="wb-diff-arrow">↔</span>
               <span className="wb-diff-side">Your edits</span>
             </span>
@@ -115,6 +126,13 @@ export function EditorHost({ path, value, originalValue, diff, loading, onExitDi
             />
           </div>
         </>
+      ) : loading ? (
+        // Monaco mounts only with REAL content. Mounting on the empty
+        // "" placeholder makes the wrapper full-range-replace the model
+        // once the lazy load lands — with an explicit undo stop on top,
+        // so toolbar-Undo could wipe chunks of the file (seen live).
+        // Waiting for the load gives the model its text at creation.
+        <div className="wb-editor-placeholder" />
       ) : (
         <Editor
           defaultLanguage="javascript"
@@ -122,11 +140,11 @@ export function EditorHost({ path, value, originalValue, diff, loading, onExitDi
           language={path ? languageOf(path) : "javascript"}
           loading={<span className="muted">{t("common.loading")}</span>}
           onMount={(editor) => {
+            setActiveEditor(editor);
             editor.onDidChangeCursorPosition((event) => {
               onCursor({ line: event.position.lineNumber, col: event.position.column });
             });
           }}
-          options={{ ...EDITOR_OPTIONS, readOnly: loading || undefined }}
           path={path || "draft"}
           theme={monacoTheme}
           value={value}

@@ -205,18 +205,99 @@ body.wb-resizing .wb-sidebar { transition: none; }
   width: 7px;
 }
 .wb-tree-empty { font-size: 12.5px; line-height: 1.6; padding: 14px 12px; }
-/* The no-folder empty state is itself the open-folder button — strip
-   the button chrome so it reads as the tree's quiet prompt. */
-button.wb-tree-empty-cta {
+/* The reconnect card is the one state that must NOT read as a quiet
+   empty prompt — after a sign-out the user thinks the workspace is
+   gone, so it gets warning tint + icon + headline. */
+.wb-tree-reconnect {
+  align-items: flex-start;
+  background: color-mix(in srgb, hsl(var(--warning-fg)) 10%, transparent);
+  border: 1px solid color-mix(in srgb, hsl(var(--warning-fg)) 45%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 9px;
+  margin: 10px 8px 4px;
+  padding: 10px;
+  text-align: left;
+  width: calc(100% - 16px);
+}
+.wb-tree-reconnect:hover { background: color-mix(in srgb, hsl(var(--warning-fg)) 16%, transparent); }
+.wb-tree-reconnect-icon { color: hsl(var(--warning-fg)); flex: none; margin-top: 1px; }
+.wb-tree-reconnect-text { display: block; font-size: 12px; line-height: 1.5; }
+.wb-tree-reconnect-text strong { color: hsl(var(--warning-fg)); display: block; font-size: 12.5px; margin-bottom: 2px; }
+/* No-folder empty state: a centered welcome card instead of a bare
+   sentence — the explorer's first impression when nothing is open. */
+.wb-tree-empty-state {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  padding: 34px 16px 22px;
+  text-align: center;
+}
+.wb-tree-empty-icon { color: hsl(var(--muted-foreground)); margin-bottom: 10px; opacity: 0.75; }
+.wb-tree-empty-title { font-size: 12.5px; font-weight: 600; margin: 0 0 4px; }
+.wb-tree-empty-body { color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.5; margin: 0 0 14px; }
+.wb-empty-open {
+  align-items: center;
+  background: hsl(var(--primary));
+  border: 1px solid hsl(var(--primary-strong));
+  border-radius: 6px;
+  color: hsl(var(--primary-foreground));
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  padding: 6px 14px;
+}
+.wb-empty-open:hover:not(:disabled) { filter: brightness(1.08); }
+.wb-empty-open:disabled { cursor: default; opacity: 0.5; }
+.wb-empty-secondary {
+  align-items: center;
   background: none;
   border: 0;
-  color: inherit;
+  color: hsl(var(--muted-foreground));
   cursor: pointer;
-  display: block;
+  display: inline-flex;
   font: inherit;
-  text-align: left;
-  width: 100%;
+  font-size: 11.5px;
+  gap: 5px;
+  margin-top: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
+.wb-empty-secondary:hover:not(:disabled) { color: hsl(var(--foreground)); }
+.wb-tree-empty-hint { color: hsl(var(--muted-foreground)); font-size: 10.5px; margin: 14px 0 0; opacity: 0.8; }
+
+/* Connect card: the terminal tab's offline state is onboarding, not an
+   error — one command starts the agent on the user's machine and the
+   panel pairs with it automatically. */
+.wb-connect { align-items: center; display: flex; flex-direction: column; padding: 40px 24px; text-align: center; }
+.wb-connect-icon { color: hsl(var(--muted-foreground)); margin-bottom: 10px; }
+.wb-connect-title { font-size: 13px; font-weight: 600; margin: 0 0 10px; }
+.wb-connect-start {
+  align-items: center;
+  background: hsl(var(--primary));
+  border: 1px solid hsl(var(--primary-strong));
+  border-radius: 6px;
+  color: hsl(var(--primary-foreground));
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 7px 18px;
+}
+.wb-connect-start:hover:not(:disabled) { filter: brightness(1.08); }
+.wb-connect-start:disabled { cursor: default; opacity: 0.55; }
+.wb-connect-body { color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.55; margin: 0 0 14px; max-width: 470px; }
+.wb-connect-cmd { align-items: center; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: 6px; display: flex; gap: 8px; max-width: 540px; padding: 6px 6px 6px 12px; width: 100%; }
+.wb-connect-cmd code { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-connect-copy { flex: none; }
+.wb-connect-note { color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.5; margin: 12px 0 0; }
+.wb-connect-note code, .wb-connect-body code { background: hsl(var(--muted)); border-radius: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; padding: 1px 5px; }
 
 /* ---------- import progress ---------- */
 
@@ -380,6 +461,34 @@ button.wb-tree-empty-cta {
   min-height: 36px;
   overflow-x: auto;
 }
+/* Editor title actions at the strip's RIGHT end (VS Code's toolbar
+   position): the active file's auto-save status + undo/redo. Sticky so
+   they stay pinned even when many tabs scroll under them. */
+.wb-tabs-actions {
+  align-items: center;
+  background: hsl(var(--accent));
+  border-left: 1px solid hsl(var(--border));
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  margin-left: auto;
+  padding: 0 6px 0 10px;
+  position: sticky;
+  right: 0;
+  z-index: 1;
+}
+.wb-editor-save {
+  align-items: center;
+  color: hsl(var(--muted-foreground));
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  justify-content: flex-end;
+  min-width: 72px;
+  padding-right: 6px;
+}
+.wb-editor-save.is-saved { color: hsl(var(--success-fg)); font-weight: 600; }
+.wb-editor-save.is-error { color: hsl(var(--error-fg)); font-weight: 600; }
 .wb-tab {
   align-items: center;
   background: transparent;
@@ -452,8 +561,11 @@ button.wb-tree-empty-cta {
 /* ---------- editor area ---------- */
 
 .wb-editor { flex: 1; min-height: 0; position: relative; }
-/* Lazy load: while a tab's text streams from disk the editor is
-   read-only under a soft veil. */
+/* While a tab's text streams from disk Monaco is not mounted at all
+   (see EditorHost) — this spacer fills the area under the veil. */
+.wb-editor-placeholder { height: 100%; }
+/* Lazy load veil: while a tab's text streams from disk the editor area
+   is covered under a soft veil. */
 .wb-editor-loading {
   align-items: center;
   background: hsl(var(--background) / 0.55);
@@ -660,18 +772,6 @@ button.wb-tree-empty-cta {
   padding: 6px 12px 8px;
 }
 
-.wb-term-shell {
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-  border-radius: 4px;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  margin-left: 2px;
-  padding: 2px 4px;
-}
-
-.wb-term-shell:focus { border-color: hsl(var(--primary)); outline: none; }
-
 /* ---------- status bar ---------- */
 
 .wb-status {
@@ -714,6 +814,48 @@ button.wb-tree-empty-cta {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* the git branch chip (VS Code status bar) -- sits on the primary bar */
+.wb-status-git {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  max-width: 240px;
+  overflow: hidden;
+  padding: 2px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-status-git:hover { background: rgba(255, 255, 255, 0.18); }
+/* "Stop server" — the panel-header counterpart of the ConnectCard's
+   "Start server" button. Danger-tinted outline so it reads as a real
+   action, not a status label; armed state fills in further. */
+.wb-panel-stop {
+  align-items: center;
+  background: color-mix(in srgb, hsl(var(--error-fg)) 10%, transparent);
+  border: 1px solid color-mix(in srgb, hsl(var(--error-fg)) 40%, transparent);
+  border-radius: 5px;
+  color: hsl(var(--error-fg));
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 5px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.wb-panel-stop:hover:not(.armed) { background: color-mix(in srgb, hsl(var(--error-fg)) 22%, transparent); }
+.wb-panel-stop.armed { background: color-mix(in srgb, hsl(var(--error-fg)) 28%, transparent); }
+.wb-status-git-count {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  flex: none;
+  font-size: 10px;
+  padding: 0 5px;
 }
 
 /* ---------- command palette ---------- */
@@ -1043,6 +1185,71 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
   margin: 8px 0 0;
 }
 .wb-scm-result a { color: inherit; font-weight: 600; }
+
+/* commit box -- VS Code puts the message + commit button on TOP */
+.wb-scm-commit { display: flex; flex-direction: column; gap: 8px; }
+.wb-scm-message {
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  min-height: 52px;
+  outline: none;
+  padding: 7px 9px;
+  resize: none;
+  width: 100%;
+}
+.wb-scm-message:focus { border-color: hsl(var(--primary)); }
+.wb-scm-message::placeholder { color: hsl(var(--muted-foreground)); }
+
+/* collapsible section headings with hover-revealed actions */
+.wb-scm-collapsible { border-radius: 6px; cursor: pointer; margin: 0 0 8px; padding: 2px 4px 2px 0; user-select: none; }
+.wb-scm-collapsible:hover { color: hsl(var(--foreground)); }
+.wb-scm-collapsible:focus-visible { outline: 1px solid hsl(var(--primary)); }
+.wb-scm-chev { align-items: center; color: hsl(var(--muted-foreground)); display: inline-flex; }
+.wb-scm-heading-actions { align-items: center; display: inline-flex; gap: 2px; margin-left: auto; opacity: 0; transition: opacity 0.12s ease; }
+.wb-scm-heading:hover .wb-scm-heading-actions,
+.wb-scm-heading:focus-within .wb-scm-heading-actions { opacity: 1; }
+.wb-scm-spin { animation: wb-spin 0.9s linear infinite; }
+@keyframes wb-spin { to { transform: rotate(360deg); } }
+
+/* per-file stage/unstage -- row actions appear on hover, VS Code style */
+.wb-scm-status { color: hsl(var(--warning-fg)); flex: none; font-size: 11px; font-weight: 700; padding: 0 4px; }
+.wb-scm-row-actions { align-items: center; display: inline-flex; gap: 2px; opacity: 0; }
+.wb-scm-row:hover .wb-scm-row-actions,
+.wb-scm-row:focus-within .wb-scm-row-actions { opacity: 1; }
+
+/* branch picker row + inline create-branch form */
+.wb-scm-branch-row { align-items: center; display: flex; gap: 4px; }
+.wb-scm-branch-row .wb-scm-select { flex: 1; min-width: 0; }
+.wb-scm-branch-row .wb-scm-input { flex: 1; width: auto; }
+.wb-scm-branch-create { align-items: center; display: flex; gap: 4px; }
+.wb-scm-branch-create .wb-scm-input { flex: 1; width: auto; }
+.wb-scm-btn-inline { flex: none; margin-top: 0; width: auto; }
+.wb-scm-note { color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.45; margin: 5px 0 0; overflow-wrap: anywhere; }
+
+/* token field with show/hide + the signed-in chip */
+.wb-scm-token { align-items: center; display: flex; gap: 4px; }
+.wb-scm-token .wb-scm-input { flex: 1; width: auto; }
+.wb-scm-verified { align-items: center; color: hsl(var(--success-fg)); display: inline-flex; font-size: 11px; font-weight: 600; gap: 4px; margin-top: 5px; }
+
+/* branch commit history */
+.wb-scm-history { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; }
+.wb-scm-commit-row {
+  border-radius: 6px;
+  color: hsl(var(--foreground));
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px;
+  text-decoration: none;
+}
+.wb-scm-commit-row:hover { background: hsl(var(--accent)); }
+.wb-scm-commit-msg { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-scm-commit-meta { color: hsl(var(--muted-foreground)); font-size: 11px; }
 
 /* ---------- small screens ---------- */
 

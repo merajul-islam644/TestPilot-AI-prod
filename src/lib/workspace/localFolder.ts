@@ -10,6 +10,7 @@
 // http://localhost:9090 (loopback is exempt from mixed-content rules),
 // so these routes ride the same origin — no Vite proxy involved.
 
+import { isWorkspaceRootName } from "./importFiles";
 import { runnerUrl } from "../runner/client";
 
 /** One entry of the server's recursive tree walk (Lattice FileNode). */
@@ -67,6 +68,32 @@ export const localFolder = {
       root: opts.root,
       maxDepth: opts.maxDepth
     });
+  },
+
+  /** Workspace-root validation (runner edition of fsaWorkspace's
+   *  resolveWorkspaceRoot): `rootPath` itself when its name is
+   *  e2e/playwright (case-insensitive), else the shallowest
+   *  e2e/playwright folder inside it (breadth-first over the
+   *  server-capped walk — node_modules/.git already hidden), as an
+   *  absolute path. null → the caller refuses the pick with an error. */
+  async resolveRoot(rootPath: string): Promise<string | null> {
+    const leaf = rootPath.split(/[\\/]/).filter(Boolean).pop() ?? "";
+    if (isWorkspaceRootName(leaf)) return rootPath;
+    const { tree } = await this.listTree({ root: rootPath });
+    if (!tree || tree.length === 0) return null;
+    type Level = { name: string; path: string; dirs: FolderNode[] };
+    let level: Level[] = tree
+      .filter((node) => node.kind === "dir")
+      .map((node) => ({ name: node.name, path: node.path, dirs: node.children?.filter((child) => child.kind === "dir") ?? [] }));
+    while (level.length > 0) {
+      for (const node of level) {
+        if (isWorkspaceRootName(node.name)) return `${rootPath}/${node.path}`;
+      }
+      level = level
+        .flatMap((node) => node.dirs.map((child) => ({ name: child.name, path: child.path, dirs: child.children?.filter((grand) => grand.kind === "dir") ?? [] })))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return null;
   },
 
   /** Read one text file in the folder. `null` on 404 (deleted out from

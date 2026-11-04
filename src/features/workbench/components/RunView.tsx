@@ -43,9 +43,13 @@ export function RunView({ baseURL, onBaseURLChange, onRun, running, runnableCoun
         <p className="wb-run-meta muted">
           {runnableCount} runnable spec{runnableCount === 1 ? "" : "s"} · {filesCount} file{filesCount === 1 ? "" : "s"}
         </p>
-        <p className="wb-run-meta muted">
-          <span className={`health-dot ${runnerOnline ? "ok" : ""}`} /> {runnerOnline === false ? t("tests.runnerOffline") : t("tests.runnerOnline")} <span className="mono">{runnerUrl}</span>
-        </p>
+        {runnerOnline !== undefined ? (
+          <p className="wb-run-meta muted">
+            <span className={`health-dot ${runnerOnline ? "ok" : ""}`} />{" "}
+            {runnerOnline ? t("tests.runnerOnline") : t("tests.runnerOff")}{" "}
+            <span className="mono">{runnerUrl}</span>
+          </p>
+        ) : null}
 
         {outcome ? (
           <div className="wb-run-result">

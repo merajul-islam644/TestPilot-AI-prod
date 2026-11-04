@@ -11,6 +11,7 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
+import { Select } from "../../shared/ui/select";
 import { Switch } from "../../shared/ui/Switch";
 import { useCurrentUser, userDisplayName, userInitials } from "../profile/useCurrentUser";
 
@@ -113,22 +114,24 @@ export function SettingsPage() {
                 <h4>{t("settings.general.language")}</h4>
                 <p>{t("settings.general.languageHint")}</p>
                 <div className="form-field" style={{ maxWidth: 320 }}>
-                  <select onChange={(event) => setLanguage(event.target.value)} value={language}>
-                    {(languages.length > 0 ? languages : [{ code: language, isDefault: true, name: language }]).map((entry) => (
-                      <option key={entry.code} value={entry.code}>{entry.name}</option>
-                    ))}
-                  </select>
+                  <Select
+                    className="w-full"
+                    items={(languages.length > 0 ? languages : [{ code: language, isDefault: true, name: language }]).map((entry) => ({ value: entry.code, label: entry.name }))}
+                    onChange={setLanguage}
+                    value={language}
+                  />
                 </div>
               </div>
               <div className="settings-section">
                 <h4>{t("settings.general.env")}</h4>
                 <p>{t("settings.general.envHint")}</p>
                 <div className="form-field" style={{ maxWidth: 320 }}>
-                  <select onChange={(event) => setEnvDraft(event.target.value as DefaultEnvironment)} value={envDraft}>
-                    {ENV_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>{t(option.labelKey)}</option>
-                    ))}
-                  </select>
+                  <Select
+                    className="w-full"
+                    items={ENV_OPTIONS.map((option) => ({ value: option.id, label: t(option.labelKey) }))}
+                    onChange={(value) => setEnvDraft(value as DefaultEnvironment)}
+                    value={envDraft}
+                  />
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

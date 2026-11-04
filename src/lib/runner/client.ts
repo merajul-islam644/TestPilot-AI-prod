@@ -44,6 +44,21 @@ export async function pingRunner(): Promise<boolean> {
   }
 }
 
+/** The agent's pairing code — the terminal WebSocket refuses connections
+ *  without it (WebSocket has no CORS, so the code is the door). null when
+ *  the agent is unreachable or predates pairing (older frontend compat:
+ *  the WS is then opened without a code). */
+export async function fetchRunnerPairCode(): Promise<string | null> {
+  try {
+    const response = await fetch(`${RUNNER_URL}/pair`, { signal: AbortSignal.timeout(4_000) });
+    if (!response.ok) return null;
+    const body = (await response.json().catch(() => null)) as { code?: string } | null;
+    return typeof body?.code === "string" && body.code ? body.code : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runSpecsOnRunner(input: { name: string; baseURL: string; files: { name: string; content: string }[] }): Promise<RunnerResult> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);

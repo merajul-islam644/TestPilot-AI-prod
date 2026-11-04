@@ -186,7 +186,7 @@ export const defaultDictionary = {
   "tests.results": "Results",
   "tests.openRun": "Open run",
   "tests.runnerOnline": "Runner online",
-  "tests.runnerOffline": "Runner offline — start it from runner/ (npm start).",
+  "tests.runnerOff": "Local runner: off",
   "tests.runnerError": "Runner error",
   "tests.treeTitle": "Files",
   "tests.noFiles": "No files in this workspace yet.",

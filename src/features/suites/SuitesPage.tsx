@@ -10,6 +10,7 @@ import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
+import { Select } from "../../shared/ui/select";
 import { SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 
 const SUITE_STATUS_KEYS: Record<SuiteStatus, "suite.active" | "suite.draft" | "suite.archived"> = {
@@ -47,12 +48,15 @@ export function SuitesPage() {
       <div className="toolbar">
         <Segmented onChange={(id) => setStatusFilter(id)} options={statusOptions} value={statusFilter} />
         <div className="toolbar-actions">
-          <select aria-label={t("common.project")} className="inline-select" onChange={(event) => setProjectFilter(event.target.value)} value={projectFilter}>
-            <option value="">{t("runs.filterProject")}</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
+          <Select
+            ariaLabel={t("common.project")}
+            items={[
+              { value: "", label: t("runs.filterProject") },
+              ...projects.map((project) => ({ value: project.id, label: project.name }))
+            ]}
+            onChange={setProjectFilter}
+            value={projectFilter}
+          />
         </div>
       </div>
 

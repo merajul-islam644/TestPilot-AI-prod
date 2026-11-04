@@ -282,3 +282,90 @@ export async function pushChanges(input: {
     pushed: input.files.map((file) => file.path)
   };
 }
+
+// ── branches / identity / history ─────────────────────────
+
+/** The repository's default branch (e.g. "main") — the "" fallback. */
+export async function defaultBranchOf(input: { repoInput: string; token: string }): Promise<string> {
+  const ref = parseRepoInput(input.repoInput);
+  if (!ref) throw new Error("Repository must be “owner/name” or a github.com URL");
+  const info = await gh(`/repos/${ref.owner}/${ref.repo}`, input.token);
+  if (!info.ok) throw new Error(await ghError(info, "Repository not found or inaccessible"));
+  const body = (await info.json()) as { default_branch?: string };
+  return body.default_branch || "main";
+}
+
+/** Up to 100 branch names, for the SCM branch picker. */
+export async function listBranches(input: { repoInput: string; token: string }): Promise<string[]> {
+  const ref = parseRepoInput(input.repoInput);
+  if (!ref) throw new Error("Repository must be “owner/name” or a github.com URL");
+  const response = await gh(`/repos/${ref.owner}/${ref.repo}/branches?per_page=100`, input.token);
+  if (!response.ok) throw new Error(await ghError(response, "Could not list branches"));
+  const body = (await response.json()) as { name?: string }[];
+  const names = body.map((branch) => branch.name ?? "").filter(Boolean);
+  if (names.length === 0) throw new Error("This repository has no branches");
+  return names;
+}
+
+/**
+ * Create `name` off `from` (default branch when empty) via the Git data
+ * API. Requires a token with push access; GitHub answers 422 when the
+ * branch already exists.
+ */
+export async function createBranch(input: { repoInput: string; token: string; name: string; from?: string }): Promise<{ url: string }> {
+  const ref = parseRepoInput(input.repoInput);
+  if (!ref) throw new Error("Repository must be “owner/name” or a github.com URL");
+  const name = input.name.trim();
+  if (!name || /[\s~^:?*\[\\]/.test(name)) throw new Error("Branch name has invalid characters or is empty");
+  const base = `/repos/${ref.owner}/${ref.repo}`;
+  const fromBranch = input.from?.trim() || (await defaultBranchOf({ repoInput: input.repoInput, token: input.token }));
+  const refResponse = await gh(`${base}/git/ref/heads/${encodeURIComponent(fromBranch)}`, input.token);
+  if (!refResponse.ok) throw new Error(await ghError(refResponse, `Could not read “${fromBranch}” to branch from`));
+  const refBody = (await refResponse.json()) as { object?: { sha?: string } };
+  const sha = refBody.object?.sha;
+  if (!sha) throw new Error(`Branch “${fromBranch}” has no head commit`);
+  const create = await gh(`${base}/git/refs`, input.token, {
+    method: "POST",
+    body: JSON.stringify({ ref: `refs/heads/${name}`, sha })
+  });
+  if (!create.ok) {
+    if (create.status === 422) throw new Error(`Branch “${name}” already exists`);
+    throw new Error(await ghError(create, `Could not create “${name}”`));
+  }
+  return { url: `https://github.com/${ref.owner}/${ref.repo}/tree/${encodeURIComponent(name)}` };
+}
+
+/** The login the token belongs to — the SCM "signed in" chip. */
+export async function whoAmI(token: string): Promise<string> {
+  const response = await gh("/user", token);
+  if (!response.ok) throw new Error(await ghError(response, "GitHub rejected the token"));
+  const body = (await response.json()) as { login?: string };
+  if (!body.login) throw new Error("GitHub did not return the account name");
+  return body.login;
+}
+
+export type CommitInfo = { sha: string; message: string; author: string; date: string; url: string };
+
+/** The branch's recent commits, for the SCM history list. */
+export async function listCommits(input: { repoInput: string; branch: string; token: string; limit?: number }): Promise<CommitInfo[]> {
+  const ref = parseRepoInput(input.repoInput);
+  if (!ref) throw new Error("Repository must be “owner/name” or a github.com URL");
+  const branch = input.branch.trim() || (await defaultBranchOf({ repoInput: input.repoInput, token: input.token }));
+  const response = await gh(
+    `/repos/${ref.owner}/${ref.repo}/commits?sha=${encodeURIComponent(branch)}&per_page=${input.limit ?? 8}`,
+    input.token
+  );
+  if (!response.ok) throw new Error(await ghError(response, "Could not list commits"));
+  const body = (await response.json()) as {
+    sha?: string;
+    html_url?: string;
+    commit?: { message?: string; author?: { name?: string; date?: string } };
+  }[];
+  return body.map((entry) => ({
+    sha: entry.sha ?? "",
+    message: (entry.commit?.message ?? "").split("\n")[0] ?? "",
+    author: entry.commit?.author?.name ?? "",
+    date: entry.commit?.author?.date ?? "",
+    url: entry.html_url ?? `https://github.com/${ref.owner}/${ref.repo}/commit/${entry.sha ?? ""}`
+  })).filter((entry) => entry.sha !== "");
+}

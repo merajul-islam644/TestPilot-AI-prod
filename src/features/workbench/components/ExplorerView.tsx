@@ -8,7 +8,7 @@
 // IS the open-folder CTA — one click opens the native folder dialog.
 
 import { useEffect, useMemo, useState } from "react";
-import { FileInput, FilePlus, FolderOpen, FolderPlus, PanelLeftClose } from "lucide-react";
+import { FileInput, FilePlus, FolderOpen, FolderPlus, PanelLeftClose, RefreshCw } from "lucide-react";
 import type { ImportProgress } from "../../../lib/blocks/data";
 import { withRootNode, type TreeNode } from "../model/treeModel";
 import { TreeRow } from "./TreeRow";
@@ -163,20 +163,44 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconn
           </div>
         ) : null}
         {fsaReconnect ? (
+          // Prominent on purpose: this is the "your workspace is one click
+          // away" state after a sign-out/reload, not a quiet empty prompt.
           <button
-            className="wb-tree-empty muted wb-tree-empty-cta"
+            className="wb-tree-reconnect"
             onClick={onReconnectFsa}
             title="The browser needs one click to re-grant access to this folder"
             type="button"
           >
-            Reconnect “{fsaReconnect.name}” — the browser saved this workspace but needs your click to grant access again.
+            <RefreshCw className="wb-tree-reconnect-icon" size={16} />
+            <span className="wb-tree-reconnect-text">
+              <strong>Reconnect “{fsaReconnect.name}”</strong>
+              The workspace is saved — one click re-grants folder access
+              after a sign-out or reload, and your open files come back.
+            </span>
           </button>
         ) : null}
-        {!root && !fsaReconnect
-          ? <button className="wb-tree-empty muted wb-tree-empty-cta" disabled={opening} onClick={onImport} type="button">
-              Open a folder from your machine to browse and edit its files here — edits save to disk as you go.
+        {!root && !fsaReconnect ? (
+          // The no-folder empty state: a centered welcome card — icon,
+          // one-line pitch, the primary action, a single-file alternative
+          // and the palette path for keyboard users.
+          <div className="wb-tree-empty-state">
+            <FolderOpen className="wb-tree-empty-icon" size={24} />
+            <p className="wb-tree-empty-title">No workspace open</p>
+            <p className="wb-tree-empty-body">
+              Open a folder from your machine — its files stay on your
+              disk and edits save as you type.
+            </p>
+            <button className="wb-empty-open" disabled={opening} onClick={onImport} type="button">
+              <FolderOpen size={13} />
+              Open Folder
             </button>
-          : (
+            <button className="wb-empty-secondary" disabled={opening} onClick={onOpenFileFromDisk} type="button">
+              <FileInput size={12} />
+              or open a single file
+            </button>
+            <p className="wb-tree-empty-hint">Ctrl+Shift+P → “Workspace: Open Folder (disk)”</p>
+          </div>
+        ) : (
             <>
               {rootTree.map((node) => (
                 <TreeRow
