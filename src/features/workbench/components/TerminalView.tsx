@@ -1,22 +1,31 @@
-// Terminal panel tab — a real shell (node-pty on the runner) streamed to
-// xterm.js over WebSocket, mirroring Lattice's TerminalPanel design:
+// Terminal panel tab — real shells (node-pty on the runner) streamed to
+// xterm.js over WebSocket, VS Code style: MULTIPLE terminals, each its
+// own tab in the strip above the pane (Lattice's TerminalTabs design).
 //
-//   • On mount the xterm instance opens a WS to
-//     /api/terminal/shell?shellId=…&cols=…&rows=… (cwd defaults to the
-//     app root server-side). Keystrokes (onData) → base64 `input`
-//     frames; PTY bytes → `output` frames → term.write — full ANSI
-//     colors, cursor, and interactive apps included.
-//   • ResizeObserver → FitAddon → `resize` frames keep cols/rows in sync.
-//   • Shell switch (header dropdown) tears down the WS and reopens with
-//     the new shellId; the xterm instance (and its scrollback) resets.
-//   • Scrollback persists to localStorage via SerializeAddon, so a
-//     refresh or panel toggle doesn't wipe the buffer.
-//   • The PTY itself is NOT killed on WS close — the runner keeps it
-//     alive keyed by cwd+terminalId, so `npm run dev` survives a
-//     remount. Only a real shell exit (exit / Ctrl+C) ends it.
+//   • Every tab owns one PTY on the runner, keyed
+//     projectId+cwd+terminalId — so tab 1 runs `npm run dev` while tab 2
+//     runs a test watch, simultaneously. The tab strip mirrors VS Code:
+//     label + ✕ per tab (✕ always on the active one, hover-only on the
+//     rest), middle-click closes, [+] at the end opens another.
+//   • Each tab = one TerminalInstance: on mount its xterm opens a WS to
+//     /api/terminal/shell?…&terminalId=…; keystrokes (onData) → base64
+//     `input` frames; PTY bytes → `output` frames → term.write. Resize
+//     (ResizeObserver → FitAddon) keeps cols/rows in sync per instance.
+//   • INACTIVE tabs stay mounted with visibility:hidden — NOT
+//     display:none — so xterm's CharSizeService keeps valid dimensions
+//     and switching back needs no re-fit (Lattice's lesson).
+//   • The header shell dropdown picks the shell for NEW terminals only
+//     (VS Code's model); existing tabs keep the shell they were born
+//     with. The tab record commits its shellId on the first `started`
+//     frame, so a later dropdown change can never move an existing tab.
+//   • Scrollback persists per terminal to localStorage via SerializeAddon
+//     (key …:projectId:terminalId): a refresh restores the whole tab
+//     list and each tab reattaches to its still-running PTY.
+//   • The PTYs are NOT killed on WS close — only closing a tab (✕ /
+//     middle-click), a folder switch, or a shell exit ends them.
 
-import { useEffect, useRef, useState } from "react";
-import { Check, Copy, FolderOpen, Power, TerminalSquare } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, Copy, FolderOpen, Info, Plus, Power, TerminalSquare, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -27,9 +36,17 @@ import { readSavedRoot } from "../data/useTestWorkspace";
 
 export type ShellId = string;
 
+export type ShellDescriptor = { id: string; label: string; available: boolean; resolvedPath: string | null };
+
+/** One tab in the strip: a stable id (the PTY's terminalId), the shell
+ *  it was created with ("" until the catalog resolves it), and a display
+ *  label ("Git Bash", "Git Bash (2)", …). */
+type TermRecord = { id: string; shellId: ShellId; label: string };
+
 // localStorage keys — versioned like Lattice's so a schema change can migrate.
 const SHELL_STORAGE_KEY = "wb-term-shell";
 const SCROLLBACK_KEY = "wb-term-scrollback.v1";
+const TERM_LIST_KEY = "wb-term-list.v1";
 const SCROLLBACK_SAVE_DEBOUNCE_MS = 250;
 
 // Match the IDE chrome (Lattice's DEFAULT_FG/BG) — a near-black surface
@@ -52,6 +69,73 @@ export function writeStoredShell(id: ShellId): void {
   } catch {
     /* private mode — the picker just resets on reload */
   }
+}
+
+function readScrollback(projectId: string, terminalId: string): string | null {
+  try {
+    return localStorage.getItem(`${SCROLLBACK_KEY}:${projectId}:${terminalId}`);
+  } catch {
+    return null;
+  }
+}
+
+function writeScrollback(projectId: string, terminalId: string, data: string): void {
+  try {
+    localStorage.setItem(`${SCROLLBACK_KEY}:${projectId}:${terminalId}`, data);
+  } catch {
+    /* quota / private mode — best effort */
+  }
+}
+
+function dropScrollback(projectId: string, terminalId: string): void {
+  try {
+    localStorage.removeItem(`${SCROLLBACK_KEY}:${projectId}:${terminalId}`);
+  } catch {
+    /* */
+  }
+}
+
+function readTermList(projectId: string): { terminals: TermRecord[]; activeId: string | null } | null {
+  try {
+    const raw = localStorage.getItem(`${TERM_LIST_KEY}:${projectId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { terminals?: unknown; activeId?: unknown };
+    if (!Array.isArray(parsed.terminals)) return null;
+    const terminals = parsed.terminals.filter(
+      (t): t is TermRecord => !!t && typeof (t as TermRecord).id === "string"
+    );
+    return {
+      terminals,
+      activeId: typeof parsed.activeId === "string" ? parsed.activeId : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTermList(projectId: string, terminals: TermRecord[], activeId: string | null): void {
+  try {
+    localStorage.setItem(`${TERM_LIST_KEY}:${projectId}`, JSON.stringify({ terminals, activeId }));
+  } catch {
+    /* quota / private mode — best effort */
+  }
+}
+
+/** "main" keeps the server's default id (backward compat with a PTY that
+ *  may already be running from an older build); further tabs are t2, t3… */
+function nextTerminalId(existing: string[]): string {
+  if (!existing.includes("main")) return "main";
+  let n = 2;
+  while (existing.includes(`t${n}`)) n++;
+  return `t${n}`;
+}
+
+/** Tab label from the shell catalog; a second tab on the same shell gets
+ *  " (2)", a third " (3)" — VS Code's naming. */
+function labelFor(shellId: ShellId, shells: ShellDescriptor[], others: TermRecord[]): string {
+  const base = shells.find((s) => s.id === shellId)?.label ?? "Terminal";
+  const n = others.filter((t) => t.shellId === shellId).length;
+  return n === 0 ? base : `${base} (${n + 1})`;
 }
 
 type TermFrame =
@@ -163,30 +247,6 @@ function NoWorkspaceGate({ onOpenFolder, opening }: { onOpenFolder: () => void; 
   );
 }
 
-function readScrollback(projectId: string): string | null {
-  try {
-    return localStorage.getItem(`${SCROLLBACK_KEY}:${projectId}`);
-  } catch {
-    return null;
-  }
-}
-
-function writeScrollback(projectId: string, data: string): void {
-  try {
-    localStorage.setItem(`${SCROLLBACK_KEY}:${projectId}`, data);
-  } catch {
-    /* quota / private mode — best effort */
-  }
-}
-
-function dropScrollback(projectId: string): void {
-  try {
-    localStorage.removeItem(`${SCROLLBACK_KEY}:${projectId}`);
-  } catch {
-    /* */
-  }
-}
-
 /** VS Code parity: the shell starts in the OPEN WORKSPACE folder — but
  *  only when its disk path is actually known, i.e. a workspace opened
  *  through the agent's own folder dialog (mode "runner"). A browser
@@ -200,22 +260,41 @@ function terminalCwdParam(projectId: string): string {
   return `&cwd=${encodeURIComponent(saved.root)}`;
 }
 
-export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root, onOpenFolder, opening }: {
+/** Kills one terminal's PTY on the runner (fire-and-forget — the server
+ *  reaps stale records anyway). */
+function stopRunnerPty(runnerUrl: string, projectId: string, terminalId: string): void {
+  void fetch(`${runnerUrl}/api/terminal/stop`, {
+    body: JSON.stringify({ projectId, terminalId }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST"
+  }).catch(() => undefined);
+}
+
+/** One terminal tab: its own xterm + WS + PTY + scrollback. The shellId
+ *  is FIXED at birth ("" = resolve from the default when the catalog
+ *  lands); the outer component owns the tab list, so this component has
+ *  no shell-switch or folder-change logic — a root change remounts every
+ *  instance fresh (the outer bumps `gen` in the React key). */
+function TerminalInstance({ runnerUrl, runnerOnline, projectId, terminalId, shellId, defaultShellId, active, deadIds, onShellResolved }: {
   runnerUrl: string;
   runnerOnline: boolean | undefined;
-  shellId: ShellId;
-  /** Terminals are project-scoped: shell process and scrollback are
-   *  keyed by project so two projects never share a session. */
   projectId: string;
-  /** The open workspace's root (real disk path for agent-picked
-   *  folders). A change restarts the shell in the new root; null means
-   *  no folder at all — the gate shows and NO shell spawns. */
-  root: string | null;
-  /** Opens the folder dialog (the hook's openFolder — with the agent
-   *  up that is the native OS dialog). */
-  onOpenFolder: () => void;
-  /** True while a folder open is in flight (disables the gate's button). */
-  opening: boolean;
+  /** This tab's PTY id — the server registry key's third component. */
+  terminalId: string;
+  /** The shell this tab committed to ("" = use the default). */
+  shellId: ShellId;
+  /** The header dropdown's current pick — only consulted while shellId
+   *  is still "" (the tab hasn't spawned yet). */
+  defaultShellId: ShellId;
+  /** True when this tab is the strip's active one (drives visibility +
+   *  focus). */
+  active: boolean;
+  /** Shared set of tab ids being removed right now — their unmount
+   *  cleanup must NOT re-save scrollback over the drop. */
+  deadIds: React.RefObject<Set<string>>;
+  /** Fired on the first `started` so the tab commits its shell (and
+   *  label) into the persisted record. */
+  onShellResolved: (terminalId: string, shellId: ShellId) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -223,20 +302,15 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
   const serializeRef = useRef<SerializeAddon | null>(null);
   const handleRef = useRef<WebSocket | null>(null);
   const saveTimerRef = useRef<number | null>(null);
-  // Tracks the previous shellId so the WS effect can tell "first open"
-  // from "shell switch" (the latter resets the buffer).
-  const prevShellRef = useRef<string | null>(null);
-  // Tracks the previous workspace root so opening a different folder
-  // restarts the shell in the NEW root — Lattice parity (VS Code also
-  // restarts its terminals when the workspace changes). undefined
-  // means "this effect hasn't run yet".
-  const prevRootRef = useRef<string | null | undefined>(undefined);
-  // The offline ConnectCard renders no xterm container — the mount
-  // effect must re-run (and create it) when the agent comes online.
-  const offline = runnerOnline === false;
-  // Same trick for the no-folder gate: it also renders no container, so
-  // the mount effect re-runs (and creates xterm) when a folder opens.
-  const hasWorkspace = root !== null;
+  // `active` as seen from WS handlers without re-connecting on switches.
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
+
+  // The tab waits for a shell: an unresolved record follows the header
+  // dropdown's pick until the first spawn commits it for good.
+  const effectiveShellId = shellId || defaultShellId;
 
   // Mount xterm ONCE; the WS effect below owns connect/reconnect.
   useEffect(() => {
@@ -273,7 +347,7 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
 
     // Restore the saved buffer one frame after open(): term.write walks
     // into viewport internals that need a tick to initialize.
-    const saved = readScrollback(projectId);
+    const saved = readScrollback(projectId, terminalId);
     const raf = typeof window.requestAnimationFrame === "function"
       ? window.requestAnimationFrame
       : (cb: FrameRequestCallback) => window.setTimeout(() => cb(performance.now()), 0);
@@ -282,14 +356,15 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
         fit.fit();
         if (saved) term.write(saved);
       } catch {
-        dropScrollback(projectId);
+        dropScrollback(projectId, terminalId);
       }
     });
 
     // Keep cols/rows in sync with the panel's pixel size. Debounced: the
     // panel animates its height (maximize/restore), and resizing the PTY
     // on every animation frame makes the shell repaint its prompt over
-    // and over — the "log climbs one line per click" bug.
+    // and over — the "log climbs one line per click" bug. Works for
+    // hidden tabs too: visibility:hidden keeps the container's size.
     let resizeTimer: number | null = null;
     let sentCols = 0;
     let sentRows = 0;
@@ -315,64 +390,33 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
       ro.disconnect();
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       // Final serialize — captures output that arrived after the last
-      // debounced save. Skip empty buffers (StrictMode double-mount would
-      // clobber the saved scrollback with "").
-      try {
-        const data = serialize.serialize();
-        if (data.length > 0) writeScrollback(projectId, data);
-      } catch {
-        /* */
+      // debounced save. Skip when this tab is being closed/replaced (the
+      // outer already dropped its buffer) and skip empty buffers
+      // (StrictMode double-mount would clobber the saved scrollback).
+      if (!deadIds.current?.has(terminalId)) {
+        try {
+          const data = serialize.serialize();
+          if (data.length > 0) writeScrollback(projectId, terminalId, data);
+        } catch {
+          /* */
+        }
       }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
       serializeRef.current = null;
     };
-    // projectId keys the scrollback record — a different project is a
-    // different terminal identity. `offline`/`hasWorkspace` re-run the
-    // mount when the ConnectCard or the no-folder gate hands the slot
-    // back to the real xterm container.
-  }, [projectId, offline, hasWorkspace]);
+    // projectId+terminalId key the scrollback record — a different
+    // project or tab is a different terminal identity.
+  }, [projectId, terminalId, deadIds]);
 
-  // Connect / reconnect whenever the runner URL, project, the picked
-  // shell, or the workspace root changes. First run (mount) goes through
-  // the same path as a switch.
+  // Connect / reconnect when the runner URL, liveness, identity or
+  // (still-unresolved) shell changes. Once the shell is committed, the
+  // dropdown can never retrigger this effect for this tab.
   useEffect(() => {
-    // No open folder → NO shell anywhere. A shell must start in some
-    // directory and with no workspace that would be the runner's own
-    // install path — pure noise, so nothing spawns (the gate explains).
-    // Checked BEFORE the term lookup: the gate renders no container, so
-    // waiting for `term` here would skip the folder-close stop entirely.
-    if (root === null) {
-      // Folder just closed? Stop its shell and drop its buffer — the
-      // gate replaces the terminal and nothing should keep running.
-      const closingFolder = prevRootRef.current !== undefined && prevRootRef.current !== null;
-      prevRootRef.current = root;
-      handleRef.current?.close();
-      handleRef.current = null;
-      if (closingFolder) {
-        void fetch(`${runnerUrl}/api/terminal/stop`, {
-          body: JSON.stringify({ projectId, terminalId: "main" }),
-          headers: { "Content-Type": "application/json" },
-          method: "POST"
-        }).catch(() => undefined);
-        dropScrollback(projectId);
-      }
-      return;
-    }
     const term = termRef.current;
-    // Empty shellId = the shell catalog hasn't loaded yet.
-    if (!term || runnerOnline === false || !shellId) return;
-
-    const isShellSwitch = prevShellRef.current !== null && prevShellRef.current !== shellId;
-    prevShellRef.current = shellId;
-    // A different folder means a different working directory: the old
-    // PTY must be stopped, or the server's registry would reattach us
-    // to the shell still sitting in the previous folder. A first mount
-    // (undefined → whatever) never tears down — a page refresh must
-    // reattach to its running shell, keeping the session.
-    const isRootChange = prevRootRef.current !== undefined && prevRootRef.current !== root;
-    prevRootRef.current = root;
+    // Empty shell = the shell catalog hasn't loaded yet — wait for it.
+    if (!term || runnerOnline === false || !effectiveShellId) return;
 
     let disposed = false;
     const dataSubs: { dispose(): void }[] = [];
@@ -388,35 +432,15 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
         if (!addon) return;
         try {
           const data = addon.serialize();
-          if (data.length > 0) writeScrollback(projectId, data);
+          if (data.length > 0) writeScrollback(projectId, terminalId, data);
         } catch {
           /* addon not in a serializable state */
         }
       }, SCROLLBACK_SAVE_DEBOUNCE_MS);
     };
 
-    /** Stops the old PTY on a shell switch, then opens the new WS. */
     async function connect(term: Terminal) {
-      if (isShellSwitch || isRootChange) {
-        // New shell OR new folder = new PTY. Stop the running one first,
-        // or the registry would just reattach us to the old shell (still
-        // sitting in the previous folder). The scrollback dies with it:
-        // drop the persisted buffer and clear the canvas.
-        try {
-          await fetch(`${runnerUrl}/api/terminal/stop`, {
-            body: JSON.stringify({ projectId, terminalId: "main" }),
-            headers: { "Content-Type": "application/json" },
-            method: "POST"
-          });
-        } catch {
-          /* best effort — the server reaps stale records anyway */
-        }
-        if (disposed) return;
-        dropScrollback(projectId);
-        term.reset();
-      }
-
-      const wsUrl = `${runnerUrl.replace(/^http/, "ws")}/api/terminal/shell?projectId=${encodeURIComponent(projectId)}&shellId=${encodeURIComponent(shellId)}&cols=${term.cols}&rows=${term.rows}${terminalCwdParam(projectId)}`;
+      const wsUrl = `${runnerUrl.replace(/^http/, "ws")}/api/terminal/shell?projectId=${encodeURIComponent(projectId)}&terminalId=${encodeURIComponent(terminalId)}&shellId=${encodeURIComponent(effectiveShellId)}&cols=${term.cols}&rows=${term.rows}${terminalCwdParam(projectId)}`;
       // The agent gates the shell WS behind its pairing code (WebSocket
       // has no CORS) — fetch it fresh on every connect so an agent
       // restart with a new code still pairs. Unreachable or older agent
@@ -439,8 +463,12 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
         }
         switch (frame.type) {
           case "started":
-            // Focus so keystrokes land here without an extra click.
-            term.focus();
+            // Commit this tab's shell on first spawn ("" records only —
+            // the callback no-ops for tabs that already committed), so a
+            // later dropdown change can never move this tab. Focus only
+            // when this tab is the one on screen.
+            onShellResolved(terminalId, effectiveShellId);
+            if (activeRef.current) term.focus();
             break;
           case "output":
             term.write(b64Decode(frame.data));
@@ -486,7 +514,186 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
       handleRef.current?.close();
       handleRef.current = null;
     };
-  }, [runnerUrl, shellId, runnerOnline, projectId, root]);
+  }, [runnerUrl, runnerOnline, projectId, terminalId, effectiveShellId, deadIds, onShellResolved]);
+
+  // VS Code: activating a tab focuses its terminal, so keystrokes land
+  // there without a second click into the pane.
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setTimeout(() => termRef.current?.focus(), 0);
+    return () => window.clearTimeout(id);
+  }, [active]);
+
+  return <div className="wb-term-host" ref={containerRef} />;
+}
+
+/** The whole terminal tab: strip + stacked instances. Owns the tab list
+ *  (persisted per project), the [+]/✕/switch handlers, and the folder
+ *  transitions (open/switch/close) that reset or stop every PTY. */
+export function TerminalView({ runnerUrl, runnerOnline, defaultShellId, shells, projectId, root, onOpenFolder, opening }: {
+  runnerUrl: string;
+  runnerOnline: boolean | undefined;
+  /** The header dropdown's pick — the shell for NEW terminals only. */
+  defaultShellId: ShellId;
+  /** The runner's shell catalog, for tab labels. */
+  shells: ShellDescriptor[];
+  /** Terminals are project-scoped: PTYs, scrollback and the tab list
+   *  are keyed by project so two projects never share a session. */
+  projectId: string;
+  /** The open workspace's root (real disk path for agent-picked
+   *  folders). A change stops every old PTY and restarts one fresh
+   *  tab in the new root; null means no folder at all — the gate shows
+   *  and NOTHING runs. */
+  root: string | null;
+  /** Opens the folder dialog (the hook's openFolder — with the agent
+   *  up that is the native OS dialog). */
+  onOpenFolder: () => void;
+  /** True while a folder open is in flight (disables the gate's button). */
+  opening: boolean;
+}) {
+  const offline = runnerOnline === false;
+  const hasWorkspace = root !== null;
+
+  // Browser-picked (FSA) workspaces hide their real disk path from the
+  // page — Chrome's security — so the shell can't cd into them and
+  // starts at the agent's default cwd (the app root) instead. The
+  // explorer still shows the folder's files, which makes the terminal's
+  // wrong-looking prompt mysterious. The banner below says exactly what
+  // happened and how to get a true-path shell. Re-read on root changes
+  // so reopening the folder (runner mode) clears it.
+  const [fsaWorkspace, setFsaWorkspace] = useState(false);
+  useEffect(() => {
+    const saved = readSavedRoot(projectId);
+    setFsaWorkspace(!!saved && saved.mode === "fsa");
+  }, [projectId, root]);
+
+  const [terminals, setTerminals] = useState<TermRecord[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  /** Bumped on a folder switch so every instance remounts fresh (the
+   *  React key carries it — old xterms/WS never leak into the new root). */
+  const [gen, setGen] = useState(0);
+
+  // Refs mirroring state for handlers/effects that must read the CURRENT
+  // list without being re-run by it (root transitions, tab mutations).
+  const terminalsRef = useRef(terminals);
+  const activeIdRef = useRef(activeId);
+  const shellsRef = useRef(shells);
+  const defaultShellRef = useRef(defaultShellId);
+  useEffect(() => {
+    terminalsRef.current = terminals;
+    activeIdRef.current = activeId;
+  }, [terminals, activeId]);
+  useEffect(() => {
+    shellsRef.current = shells;
+  }, [shells]);
+  useEffect(() => {
+    defaultShellRef.current = defaultShellId;
+  }, [defaultShellId]);
+
+  // Tab ids removed in the CURRENT mutation — their instances' unmount
+  // cleanup must not re-save scrollback over the buffer the mutation
+  // just dropped. Cleared per mutation (ids can be reissued later).
+  const deadIds = useRef<Set<string>>(new Set());
+
+  // Restore the saved tab list (refresh parity: same tabs, same active
+  // one, each reattaching to its still-running PTY) — or seed one tab.
+  useEffect(() => {
+    if (!hasWorkspace) return;
+    const saved = readTermList(projectId);
+    if (saved && saved.terminals.length > 0) {
+      setTerminals(saved.terminals);
+      setActiveId(
+        saved.terminals.some((t) => t.id === saved.activeId)
+          ? saved.activeId
+          : (saved.terminals[0]?.id ?? null)
+      );
+    } else {
+      const first: TermRecord = { id: "main", shellId: "", label: "Terminal" };
+      setTerminals([first]);
+      setActiveId(first.id);
+      writeTermList(projectId, [first], first.id);
+    }
+  }, [projectId, hasWorkspace]);
+
+  // Folder transitions — the ONE place terminal lifetimes are decided:
+  //   • folder switched: every old tab's PTY stops, buffers drop, one
+  //     fresh tab starts in the new root (Lattice restarts per cwd too);
+  //   • folder closed: same teardown, tab list cleared (the gate shows);
+  //   • first mount: nothing — a refresh must reattach, not restart.
+  const prevRootRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevRootRef.current;
+    prevRootRef.current = root;
+    if (prev === undefined || prev === root) return;
+    const oldTabs = terminalsRef.current;
+    deadIds.current = new Set(oldTabs.map((t) => t.id));
+    for (const t of oldTabs) {
+      stopRunnerPty(runnerUrl, projectId, t.id);
+      dropScrollback(projectId, t.id);
+    }
+    if (root === null) {
+      setTerminals([]);
+      setActiveId(null);
+      writeTermList(projectId, [], null);
+    } else {
+      const first: TermRecord = { id: "main", shellId: "", label: "Terminal" };
+      setTerminals([first]);
+      setActiveId(first.id);
+      writeTermList(projectId, [first], first.id);
+      setGen((g) => g + 1);
+    }
+  }, [root, projectId, runnerUrl]);
+
+  /** [+] — a new tab in the dropdown's current shell, focused at once. */
+  function addTerminal() {
+    const current = terminalsRef.current;
+    const id = nextTerminalId(current.map((t) => t.id));
+    deadIds.current.delete(id); // a reissued id must save again
+    const record: TermRecord = {
+      id,
+      shellId: defaultShellRef.current,
+      label: labelFor(defaultShellRef.current, shellsRef.current, current)
+    };
+    const next = [...current, record];
+    setTerminals(next);
+    setActiveId(id);
+    writeTermList(projectId, next, id);
+  }
+
+  /** ✕ / middle-click — stop that PTY, drop its buffer, activate the
+   *  neighbour (the one before, else the first; VS Code's pick). */
+  function closeTerminal(id: string) {
+    const current = terminalsRef.current;
+    if (!current.some((t) => t.id === id)) return;
+    deadIds.current.add(id);
+    stopRunnerPty(runnerUrl, projectId, id);
+    dropScrollback(projectId, id);
+    const idx = current.findIndex((t) => t.id === id);
+    const next = current.filter((t) => t.id !== id);
+    const nextActive =
+      activeIdRef.current === id
+        ? next[Math.max(0, idx - 1)]?.id ?? next[0]?.id ?? null
+        : activeIdRef.current;
+    setTerminals(next);
+    setActiveId(nextActive);
+    writeTermList(projectId, next, nextActive);
+  }
+
+  /** First spawn of an unresolved tab ("") — commit the shell AND the
+   *  real label into the record, so the dropdown never moves this tab. */
+  const onShellResolved = useCallback((id: string, shell: ShellId) => {
+    setTerminals((current) => {
+      const rec = current.find((t) => t.id === id);
+      if (!rec || rec.shellId === shell) return current;
+      const next = current.map((t) =>
+        t.id === id
+          ? { ...t, shellId: shell, label: labelFor(shell, shellsRef.current, current.filter((x) => x.id !== id)) }
+          : t
+      );
+      writeTermList(projectId, next, activeIdRef.current);
+      return next;
+    });
+  }, [projectId]);
 
   if (offline) {
     return <ConnectCard runnerUrl={runnerUrl} />;
@@ -497,9 +704,83 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
 
   return (
     <div className="wb-term">
-      {/* Padding keeps xterm's text off the panel borders; the canvas
-          fills the slot and FitAddon matches rows/cols to it. */}
-      <div className="wb-term-host" ref={containerRef} />
+      {fsaWorkspace ? (
+        <div className="wb-term-notice">
+          <Info size={12} />
+          <span>
+            Browser-picked workspace — Chrome hides its real path, so the shell starts at the app root.
+            Reopen the folder with the server online (Open Folder) to land the shell inside it.
+          </span>
+        </div>
+      ) : null}
+      {/* The strip stays even with zero tabs (just [+]) — VS Code keeps
+          its actions row too, so a closed last tab is recoverable. */}
+      <div className="wb-term-tabs" role="tablist" aria-label="Terminals">
+        {terminals.map((t) => (
+          <div
+            aria-selected={t.id === activeId}
+            className={`wb-term-tab${t.id === activeId ? " active" : ""}`}
+            key={t.id}
+            onClick={() => setActiveId(t.id)}
+            onAuxClick={(e) => {
+              if (e.button === 1) {
+                e.preventDefault();
+                closeTerminal(t.id);
+              }
+            }}
+            onMouseDown={(e) => {
+              if (e.button === 1) e.preventDefault(); // no autoscroll cursor
+            }}
+            role="tab"
+            tabIndex={-1}
+            title={t.label}
+          >
+            <span className="wb-term-tab-label">{t.label}</span>
+            <button
+              aria-label={`Close ${t.label}`}
+              className="wb-term-tab-close"
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTerminal(t.id);
+              }}
+              title={`Close ${t.label}`}
+              type="button"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        ))}
+        <button aria-label="New terminal" className="wb-term-add" onClick={addTerminal} title="New terminal" type="button">
+          <Plus size={13} />
+        </button>
+      </div>
+      {/* Every tab stays mounted; hidden ones keep visibility (never
+          display:none) so xterm's char metrics stay valid for a switch. */}
+      <div className="wb-term-hosts">
+        {terminals.length === 0 ? (
+          <div className="wb-term-empty">No terminal open — press + to start one.</div>
+        ) : (
+          terminals.map((t) => (
+            <div
+              className="wb-term-slot"
+              key={`${gen}:${t.id}`}
+              style={{ visibility: t.id === activeId ? "visible" : "hidden" }}
+            >
+              <TerminalInstance
+                active={t.id === activeId}
+                deadIds={deadIds}
+                defaultShellId={defaultShellId}
+                onShellResolved={onShellResolved}
+                projectId={projectId}
+                runnerOnline={runnerOnline}
+                runnerUrl={runnerUrl}
+                shellId={t.shellId}
+                terminalId={t.id}
+              />
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

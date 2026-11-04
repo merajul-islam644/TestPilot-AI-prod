@@ -14,10 +14,8 @@ import { Select } from "../../../shared/ui/select";
 import { StatusBadge } from "../../../shared/ui/StatusBadge";
 import { formatMs } from "../../../lib/format";
 import type { PanelTab } from "../state/workbenchStore";
-import { readStoredShell, writeStoredShell, TerminalView } from "./TerminalView";
+import { readStoredShell, writeStoredShell, TerminalView, type ShellDescriptor } from "./TerminalView";
 import { fetchRunnerPairCode } from "../../../lib/runner/client";
-
-type ShellDescriptor = { id: string; label: string; available: boolean; resolvedPath: string | null };
 
 export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, onOpenFolder, opening, maximized, onToggleMaximize, outcome, runnerOnline, runnerUrl, onTabChange, onClose }: {
   tab: PanelTab;
@@ -186,10 +184,12 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
             </button>
           ) : null}
           {/* Shell picker only when a workspace is open — with no folder
-              no shell exists, so a shell choice would be a lie. */}
+              no shell exists, so a shell choice would be a lie. VS Code
+              semantics: this picks the shell for NEW terminals only —
+              open tabs keep the shell they were born with. */}
           {tab === "terminal" && runnerOnline !== false && root !== null ? (
             <Select
-              ariaLabel="Shell"
+              ariaLabel="Shell for new terminals"
               items={[
                 ...(shells.length === 0 ? [{ value: "", label: "Loading…" }] : []),
                 ...shells.map((s) => ({
@@ -200,7 +200,7 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
               ]}
               onChange={onShellChange}
               size="sm"
-              title="Shell"
+              title="Shell for new terminals"
               value={shell}
             />
           ) : null}
@@ -233,7 +233,7 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
             )}
           </div>
         ) : tab === "terminal" ? (
-          <TerminalView onOpenFolder={onOpenFolder} opening={opening} projectId={projectId} root={root} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shellId={shell} />
+          <TerminalView defaultShellId={shell} onOpenFolder={onOpenFolder} opening={opening} projectId={projectId} root={root} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shells={shells} />
         ) : hasOutcome && outcome ? (
           <div className="wb-results">            <div className="wb-results-summary">
               <span className="wb-results-pill pass">✓ {outcome.run.passed} passed</span>

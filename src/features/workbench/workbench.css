@@ -778,8 +778,104 @@ body.wb-resizing .wb-sidebar { transition: none; }
   height: 100%;
   min-height: 0;
 }
+/* The per-terminal tab strip (VS Code): one pill per shell instance,
+   ✕ to close, [+] at the end to open another. Sits above the pane. */
+/* Browser-picked (FSA) workspace notice: the shell can't cd into a
+   folder whose real path Chrome hides, so it starts at the app root —
+   this says why, instead of leaving a mysterious prompt. */
+.wb-term-notice {
+  align-items: flex-start;
+  background: hsl(var(--muted) / 0.35);
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  color: hsl(var(--muted-foreground));
+  display: flex;
+  flex: none;
+  font-size: 11px;
+  gap: 6px;
+  line-height: 1.45;
+  padding: 5px 12px;
+}
+.wb-term-notice svg { flex: none; margin-top: 2px; }
+.wb-term-tabs {
+  align-items: stretch;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+  display: flex;
+  flex: none;
+  gap: 2px;
+  min-height: 28px;
+  overflow-x: auto;
+  padding: 0 8px;
+}
+.wb-term-tab {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  gap: 6px;
+  padding: 4px 4px 4px 9px;
+  user-select: none;
+}
+.wb-term-tab:hover { color: hsl(var(--foreground)); }
+.wb-term-tab.active {
+  border-bottom-color: hsl(var(--primary));
+  color: hsl(var(--foreground));
+}
+.wb-term-tab-label { white-space: nowrap; }
+.wb-term-tab-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  height: 16px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  width: 16px;
+}
+.wb-term-tab:hover .wb-term-tab-close,
+.wb-term-tab.active .wb-term-tab-close { opacity: 0.75; }
+.wb-term-tab-close:hover { background: hsl(var(--muted)); opacity: 1; }
+.wb-term-add {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 24px;
+  justify-content: center;
+  margin-left: auto;
+  width: 24px;
+}
+.wb-term-add:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+/* All instances stack in the same slot; inactive ones keep visibility
+   (never display:none) so xterm's CharSizeService keeps valid dims and
+   a tab switch needs no re-fit. */
+.wb-term-hosts { flex: 1; min-height: 0; position: relative; }
+.wb-term-slot { inset: 0; position: absolute; }
+.wb-term-empty {
+  align-items: center;
+  color: hsl(var(--muted-foreground));
+  display: flex;
+  font-size: 12px;
+  height: 100%;
+  justify-content: center;
+  padding: 0 12px;
+}
 .wb-term-host {
   flex: 1;
+  height: 100%;
   min-height: 0;
   padding: 6px 12px 8px;
 }

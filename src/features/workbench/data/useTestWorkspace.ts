@@ -581,10 +581,22 @@ export function useTestWorkspace(project: Project) {
           toast.success(`Opened the “${dir.name}” workspace`, {
             description: `Found inside “${picked.name}” at ${resolved.innerPath} — only that folder and its contents are open.`
           });
+          // The browser picker hides the real path — the terminal can't
+          // cd into this workspace and will start at the app root. Say
+          // so NOW; a silent wrong-looking prompt is the trap.
+          toast.info("Terminal note for a browser-picked workspace", {
+            description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
+          });
           return;
         }
         const ok = await loadFolder(dir.name, { announce: true }, dir);
-        if (!ok) await clearRootHandle(project.id);
+        if (ok) {
+          toast.info("Terminal note for a browser-picked workspace", {
+            description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
+          });
+        } else {
+          await clearRootHandle(project.id);
+        }
       } catch (error) {
         console.warn("[TestPilot] FSA folder pick failed:", error);
         toast.error("Folder picker failed", {
