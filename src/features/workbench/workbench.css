@@ -20,7 +20,10 @@
   display: grid;
   flex: 1;
   grid-template-columns: 48px auto minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  /* The editor row never shrinks below its chrome (tab strip + crumbs):
+     a floor of `auto` keeps them intact on short windows where the
+     maximized panel's 62vh used to crush them into a clipped sliver. */
+  grid-template-rows: minmax(auto, 1fr) auto;
   min-height: 0;
 }
 .wb-activity { grid-area: 1 / 1 / 3 / 2; }
@@ -34,6 +37,15 @@
   overflow: hidden;
 }
 .wb-panel { grid-area: 2 / 3 / 3 / 4; }
+/* Maximized panel: VS Code collapses the editor row to nothing and lets
+   the panel fill the whole frame — set on the grid, since the panel's
+   own height can't move the row split by itself. The editor area goes
+   fully display:none: a 0fr track alone still leaves the element at its
+   content height in Chrome, painting clipped tab-strip slivers over the
+   panel head on short windows. */
+.wb-frame.panel-max { grid-template-rows: minmax(0, 0fr) minmax(0, 1fr); }
+.wb-frame.panel-max .wb-main { display: none; }
+.wb-frame.panel-max .wb-panel.maximized { height: 100%; }
 
 /* ---------- activity bar ---------- */
 

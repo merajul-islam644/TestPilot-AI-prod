@@ -205,7 +205,13 @@ export function Workbench({ project }: { project: Project }) {
           <PanelLeft size={15} />
         </button>
       ) : null}
-      <div className="wb-frame">
+      {/* Maximized panel = VS Code behaviour: the editor row collapses
+          entirely and the panel takes the whole frame. The class (not a
+          panel style alone) is what lets the GRID re-split the rows —
+          on short windows a fixed 62vh panel used to squeeze the editor
+          below its chrome height, clipping the tab strip mid-glyph and
+          painting its slivers over the panel head. */}
+      <div className={`wb-frame${panelMaximized ? " panel-max" : ""}`}>
         <ActivityBar
           active={sidebarView}
           changesCount={ws.gitDirtyPaths.size}
@@ -324,8 +330,10 @@ export function Workbench({ project }: { project: Project }) {
             maximized={panelMaximized}
             onClearOutput={ws.clearOutput}
             onClose={() => workbenchStore.togglePanel()}
+            onOpenFolder={() => void ws.openFolder()}
             onTabChange={(tab) => workbenchStore.setPanelTab(tab)}
             onToggleMaximize={() => workbenchStore.togglePanelMaximize()}
+            opening={ws.opening}
             outcome={ws.outcome}
             outputLines={ws.outputLines}
             projectId={project.id}

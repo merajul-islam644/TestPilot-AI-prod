@@ -16,7 +16,7 @@
 //     remount. Only a real shell exit (exit / Ctrl+C) ends it.
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, Power, TerminalSquare } from "lucide-react";
+import { Check, Copy, FolderOpen, Power, TerminalSquare } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -140,6 +140,29 @@ function ConnectCard({ runnerUrl }: { runnerUrl: string }) {
   );
 }
 
+/** The terminal tab with the server up but NO folder open: a gate, not
+ *  a shell. A shell always starts in SOME directory — with no workspace
+ *  that would be the runner's own install path, which is pure noise.
+ *  So no folder → no shell at all; opening one (the agent's native
+ *  dialog → real disk path) starts the shell right there. */
+function NoWorkspaceGate({ onOpenFolder, opening }: { onOpenFolder: () => void; opening: boolean }) {
+  return (
+    <div className="wb-connect">
+      <TerminalSquare className="wb-connect-icon" size={20} />
+      <p className="wb-connect-title">No folder open</p>
+      <button className="wb-connect-start" disabled={opening} onClick={onOpenFolder} title="Opens the folder dialog — the shell starts inside the folder you pick" type="button">
+        <FolderOpen size={13} />
+        {opening ? "Opening…" : "Open Folder"}
+      </button>
+      <p className="wb-connect-body">
+        The terminal runs inside the folder you open — nothing starts until
+        then. The folder dialog is the agent's native one, so the shell gets
+        the folder's real disk path.
+      </p>
+    </div>
+  );
+}
+
 function readScrollback(projectId: string): string | null {
   try {
     return localStorage.getItem(`${SCROLLBACK_KEY}:${projectId}`);
@@ -177,7 +200,7 @@ function terminalCwdParam(projectId: string): string {
   return `&cwd=${encodeURIComponent(saved.root)}`;
 }
 
-export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root }: {
+export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root, onOpenFolder, opening }: {
   runnerUrl: string;
   runnerOnline: boolean | undefined;
   shellId: ShellId;
@@ -185,8 +208,14 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
    *  keyed by project so two projects never share a session. */
   projectId: string;
   /** The open workspace's root (real disk path for agent-picked
-   *  folders). A change restarts the shell in the new root. */
+   *  folders). A change restarts the shell in the new root; null means
+   *  no folder at all — the gate shows and NO shell spawns. */
   root: string | null;
+  /** Opens the folder dialog (the hook's openFolder — with the agent
+   *  up that is the native OS dialog). */
+  onOpenFolder: () => void;
+  /** True while a folder open is in flight (disables the gate's button). */
+  opening: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -205,6 +234,9 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
   // The offline ConnectCard renders no xterm container — the mount
   // effect must re-run (and create it) when the agent comes online.
   const offline = runnerOnline === false;
+  // Same trick for the no-folder gate: it also renders no container, so
+  // the mount effect re-runs (and creates xterm) when a folder opens.
+  const hasWorkspace = root !== null;
 
   // Mount xterm ONCE; the WS effect below owns connect/reconnect.
   useEffect(() => {
@@ -297,13 +329,37 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
       serializeRef.current = null;
     };
     // projectId keys the scrollback record — a different project is a
-    // different terminal identity. `offline` re-runs the mount when the
-    // ConnectCard hands the slot back to the real xterm container.
-  }, [projectId, offline]);
+    // different terminal identity. `offline`/`hasWorkspace` re-run the
+    // mount when the ConnectCard or the no-folder gate hands the slot
+    // back to the real xterm container.
+  }, [projectId, offline, hasWorkspace]);
 
-  // Connect / reconnect whenever the runner URL, project, or the picked
-  // shell changes. First run (mount) goes through the same path as a switch.
+  // Connect / reconnect whenever the runner URL, project, the picked
+  // shell, or the workspace root changes. First run (mount) goes through
+  // the same path as a switch.
   useEffect(() => {
+    // No open folder → NO shell anywhere. A shell must start in some
+    // directory and with no workspace that would be the runner's own
+    // install path — pure noise, so nothing spawns (the gate explains).
+    // Checked BEFORE the term lookup: the gate renders no container, so
+    // waiting for `term` here would skip the folder-close stop entirely.
+    if (root === null) {
+      // Folder just closed? Stop its shell and drop its buffer — the
+      // gate replaces the terminal and nothing should keep running.
+      const closingFolder = prevRootRef.current !== undefined && prevRootRef.current !== null;
+      prevRootRef.current = root;
+      handleRef.current?.close();
+      handleRef.current = null;
+      if (closingFolder) {
+        void fetch(`${runnerUrl}/api/terminal/stop`, {
+          body: JSON.stringify({ projectId, terminalId: "main" }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST"
+        }).catch(() => undefined);
+        dropScrollback(projectId);
+      }
+      return;
+    }
     const term = termRef.current;
     // Empty shellId = the shell catalog hasn't loaded yet.
     if (!term || runnerOnline === false || !shellId) return;
@@ -434,6 +490,9 @@ export function TerminalView({ runnerUrl, runnerOnline, shellId, projectId, root
 
   if (offline) {
     return <ConnectCard runnerUrl={runnerUrl} />;
+  }
+  if (!hasWorkspace) {
+    return <NoWorkspaceGate onOpenFolder={onOpenFolder} opening={opening} />;
   }
 
   return (

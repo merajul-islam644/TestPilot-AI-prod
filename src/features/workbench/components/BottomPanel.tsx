@@ -19,7 +19,7 @@ import { fetchRunnerPairCode } from "../../../lib/runner/client";
 
 type ShellDescriptor = { id: string; label: string; available: boolean; resolvedPath: string | null };
 
-export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, maximized, onToggleMaximize, outcome, runnerOnline, runnerUrl, onTabChange, onClose }: {
+export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, onOpenFolder, opening, maximized, onToggleMaximize, outcome, runnerOnline, runnerUrl, onTabChange, onClose }: {
   tab: PanelTab;
   /** Terminals are scoped per project — each project gets its own shell. */
   projectId: string;
@@ -28,6 +28,11 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
    *  picker (FSA) workspace. The terminal watches it: a folder change
    *  restarts the shell in the new root, Lattice-style. */
   root: string | null;
+  /** Opens the folder dialog (hook openFolder) — the terminal's
+   *  no-folder gate button and, well, the Explorer's too. */
+  onOpenFolder: () => void;
+  /** True while a folder open is in flight. */
+  opening: boolean;
   /** Chronological runner log lines ([HH:MM:SS] prefixed). */
   outputLines: string[];
   onClearOutput: () => void;
@@ -180,7 +185,9 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
               <Eraser size={13} />
             </button>
           ) : null}
-          {tab === "terminal" && runnerOnline !== false ? (
+          {/* Shell picker only when a workspace is open — with no folder
+              no shell exists, so a shell choice would be a lie. */}
+          {tab === "terminal" && runnerOnline !== false && root !== null ? (
             <Select
               ariaLabel="Shell"
               items={[
@@ -226,7 +233,7 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
             )}
           </div>
         ) : tab === "terminal" ? (
-          <TerminalView projectId={projectId} root={root} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shellId={shell} />
+          <TerminalView onOpenFolder={onOpenFolder} opening={opening} projectId={projectId} root={root} runnerOnline={runnerOnline} runnerUrl={runnerUrl} shellId={shell} />
         ) : hasOutcome && outcome ? (
           <div className="wb-results">            <div className="wb-results-summary">
               <span className="wb-results-pill pass">✓ {outcome.run.passed} passed</span>
