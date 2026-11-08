@@ -80,7 +80,14 @@ function persistSession(): void {
         activePath: state.activePath,
         expanded: state.expanded,
         sidebarWidth: state.sidebarWidth,
-        sidebarExpandedWidth: state.sidebarExpandedWidth
+        sidebarExpandedWidth: state.sidebarExpandedWidth,
+        // The bottom panel's chrome too — a refresh must reopen the
+        // terminal where the user left it, not collapse the panel and
+        // pretend no shell was ever on screen (the PTYs survive; only
+        // this UI state was being dropped).
+        panelVisible: state.panelVisible,
+        panelTab: state.panelTab,
+        panelMaximized: state.panelMaximized
       })
     );
   } catch {
@@ -89,7 +96,16 @@ function persistSession(): void {
 }
 
 /** Only these fields survive a reload; skip writes for pure chrome changes. */
-const SESSION_FIELDS: (keyof WorkbenchState)[] = ["openTabs", "activePath", "expanded", "sidebarWidth", "sidebarExpandedWidth"];
+const SESSION_FIELDS: (keyof WorkbenchState)[] = [
+  "openTabs",
+  "activePath",
+  "expanded",
+  "sidebarWidth",
+  "sidebarExpandedWidth",
+  "panelVisible",
+  "panelTab",
+  "panelMaximized"
+];
 
 function clampWidth(width: number): number {
   return Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width)));
@@ -193,7 +209,13 @@ export const workbenchStore = {
       diffTabs: [],
       expanded: Array.isArray(saved?.expanded) ? saved.expanded.filter((p): p is string => typeof p === "string") : [],
       sidebarWidth: typeof saved?.sidebarWidth === "number" ? clampWidth(saved.sidebarWidth) : 264,
-      sidebarExpandedWidth: typeof saved?.sidebarExpandedWidth === "number" ? clampWidth(saved.sidebarExpandedWidth) : 264
+      sidebarExpandedWidth: typeof saved?.sidebarExpandedWidth === "number" ? clampWidth(saved.sidebarExpandedWidth) : 264,
+      panelVisible: typeof saved?.panelVisible === "boolean" ? saved.panelVisible : false,
+      panelTab:
+        saved?.panelTab === "output" || saved?.panelTab === "results" || saved?.panelTab === "terminal"
+          ? saved.panelTab
+          : "output",
+      panelMaximized: typeof saved?.panelMaximized === "boolean" ? saved.panelMaximized : false
     }, { persist: false });
   },
   /** Fresh workspace session (initial load or import): one tab open,

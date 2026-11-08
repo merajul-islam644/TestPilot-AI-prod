@@ -140,6 +140,13 @@ export function useTestWorkspace(project: Project) {
    *  files.autoSave=afterDelay). */
   const autosaveTimersRef = useRef<Map<string, number>>(new Map());
   const AUTOSAVE_DELAY_MS = 800;
+  /** Saved-folder restore retry cadence and window: the local agent is
+   *  often still waking up right after a page reload, and one failed
+   *  folder-list must not forget the workspace. Retry every 1.5s for up
+   *  to 30s while the runner is unreachable; a folder the runner can
+   *  see but not list is genuinely gone and is forgotten immediately. */
+  const RESTORE_RETRY_MS = 1_500;
+  const RESTORE_RETRY_WINDOW_MS = 30_000;
   /** Per-path save status for the editor toolbar: "pending" inside the
    *  auto-save debounce window, "saving" in flight, "saved" after a
    *  successful write, "error" when the disk refused the write. */
@@ -155,7 +162,16 @@ export function useTestWorkspace(project: Project) {
   /** The picked folder — the workspace itself. Null = empty workspace.
    *  FSA mode: the folder's NAME (handles carry no absolute path).
    *  Runner mode: the absolute disk path (unchanged behaviour). */
-  const [root, setRoot] = useState<string | null>(null);
+  // Refresh parity: seed the root synchronously from the saved record,
+  // so a reload never flashes the empty-workspace gate and — critically
+  // — the terminal's folder-transition effect never sees null→path (it
+  // would read the refresh as a folder switch and wipe every tab + PTY).
+  // FSA mode seeds the folder NAME: the terminal's cwd is the agent's
+  // app root either way (the browser hides the real path), so its PTY
+  // registry key matches and reattach just works. A revoked handle is
+  // still handled: the failed restore clears the root, which the
+  // terminal reads as a genuine folder close.
+  const [root, setRoot] = useState<string | null>(() => readSavedRoot(project.id)?.root ?? null);
   /** The FSA directory handle behind `root` when the workspace runs on
    *  the File System Access API (no local runner involved). Null = the
    *  runner transport owns this workspace. */
@@ -246,13 +262,34 @@ export function useTestWorkspace(project: Project) {
         }
       })();
     } else if (saved) {
-      void loadFolder(saved.root, { announce: false }).then((ok) => {
+      // A refresh must never cost the workspace: right after reload the
+      // local agent is often still waking up, and loadFolder fails
+      // IDENTICALLY for "runner unreachable" and "folder vanished".
+      // Retry while the runner is down (its liveness flips within a few
+      // seconds); only once the runner is verifiably up AND the folder
+      // still fails does the memory get cleared.
+      const restoreStartedAt = Date.now();
+      const tryRestore = async (): Promise<void> => {
+        const ok = await loadFolder(saved.root, { announce: false });
         if (cancelled) return;
-        if (!ok) {
-          writeSavedRoot(project.id, null);
-          startEmptyWorkspace();
+        if (ok) return;
+        const online = await pingRunner();
+        if (cancelled) return;
+        if (!online) {
+          if (Date.now() - restoreStartedAt < RESTORE_RETRY_WINDOW_MS) {
+            window.setTimeout(() => void tryRestore(), RESTORE_RETRY_MS);
+          } else {
+            // Runner never came up — keep the saved folder, show the
+            // empty state; the next refresh retries from scratch.
+            startEmptyWorkspace();
+          }
+          return;
         }
-      });
+        // Runner up and the folder still failed → genuinely gone.
+        writeSavedRoot(project.id, null);
+        startEmptyWorkspace();
+      };
+      void tryRestore();
     } else {
       startEmptyWorkspace();
     }

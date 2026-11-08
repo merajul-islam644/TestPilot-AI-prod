@@ -360,6 +360,22 @@ function TerminalInstance({ runnerUrl, runnerOnline, projectId, terminalId, shel
       }
     });
 
+    // A page refresh never runs React's unmount cleanup, so the final
+    // serialize below is not guaranteed — the last output could fall
+    // outside the 250ms debounced save. pagehide fires reliably on
+    // reload/close: save the buffer as it stands at that instant.
+    const saveOnPageHide = () => {
+      const addon = serializeRef.current;
+      if (!addon) return;
+      try {
+        const data = addon.serialize();
+        if (data.length > 0) writeScrollback(projectId, terminalId, data);
+      } catch {
+        /* addon not in a serializable state */
+      }
+    };
+    window.addEventListener("pagehide", saveOnPageHide);
+
     // Keep cols/rows in sync with the panel's pixel size. Debounced: the
     // panel animates its height (maximize/restore), and resizing the PTY
     // on every animation frame makes the shell repaint its prompt over
@@ -388,6 +404,7 @@ function TerminalInstance({ runnerUrl, runnerOnline, projectId, terminalId, shel
 
     return () => {
       ro.disconnect();
+      window.removeEventListener("pagehide", saveOnPageHide);
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       // Final serialize — captures output that arrived after the last
       // debounced save. Skip when this tab is being closed/replaced (the
