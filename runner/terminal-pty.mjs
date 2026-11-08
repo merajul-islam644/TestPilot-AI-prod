@@ -79,9 +79,54 @@ function whichSync(cmd) {
   return null;
 }
 
+// Windows installers often leave shells OFF the PATH: Git for Windows adds
+// only Git\cmd (git.exe), never Git\bin (bash.exe), and PowerShell 7 lives
+// in its own folder unless opted in. The default PATH probe alone would
+// label Git Bash "(not installed)" on exactly those machines — so fall
+// back to the standard install locations (what VS Code checks) before
+// declaring a shell unavailable. Evaluated per request, same as whichSync.
+const KNOWN_SHELL_PATHS = {
+  "git-bash": [
+    "%ProgramFiles%\\Git\\bin\\bash.exe",
+    "%ProgramFiles(x86)%\\Git\\bin\\bash.exe",
+    "%LOCALAPPDATA%\\Programs\\Git\\bin\\bash.exe",
+    "%USERPROFILE%\\scoop\\apps\\git\\current\\bin\\bash.exe",
+    "%ProgramFiles%\\Git\\usr\\bin\\bash.exe"
+  ],
+  pwsh: [
+    "%ProgramFiles%\\PowerShell\\7\\pwsh.exe",
+    "%ProgramFiles%\\PowerShell\\7-preview\\pwsh.exe",
+    "%USERPROFILE%\\.dotnet\\tools\\pwsh.exe"
+  ]
+};
+
+function expandEnvVars(p) {
+  return p.replace(/%([^%]+)%/g, (whole, name) => process.env[name] ?? whole);
+}
+
+function isLaunchable(candidate) {
+  try {
+    if (!existsSync(candidate)) return false;
+    const st = statSync(candidate);
+    return st.isFile() || st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function resolveShellEntry(entry) {
+  const onPath = whichSync(entry.binary);
+  if (onPath) return onPath;
+  for (const raw of KNOWN_SHELL_PATHS[entry.id] ?? []) {
+    const candidate = expandEnvVars(raw);
+    if (isLaunchable(candidate)) return candidate;
+  }
+  return null;
+}
+
 function listShells() {
   return SHELL_CATALOG.map((s) => {
-    const resolved = whichSync(s.binary);
+    const resolved = resolveShellEntry(s);
     return { id: s.id, label: s.label, available: resolved !== null, resolvedPath: resolved };
   });
 }
@@ -90,7 +135,7 @@ function resolveShellById(shellId) {
   if (shellId) {
     const entry = SHELL_CATALOG.find((s) => s.id === shellId);
     if (entry) {
-      const resolved = whichSync(entry.binary);
+      const resolved = resolveShellEntry(entry);
       if (resolved) return { shell: resolved, args: entry.args };
     }
   }
