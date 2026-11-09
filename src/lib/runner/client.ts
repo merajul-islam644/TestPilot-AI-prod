@@ -46,9 +46,36 @@ export type RunnerFinishedRun = {
   cases: RunnerCase[];
 };
 
+/** One test.step(...) result carried on a live heartbeat case — lets the
+ *  tree flip each step's dot (and pin the error under the failing step)
+ *  the moment its test finishes. */
+export type RunnerProgressStep = {
+  title: string;
+  line?: number;
+  error?: string | null;
+  durationMs?: number;
+};
+
+/** One finished test from the live heartbeat — the case tree flips this
+ *  block's dot before the authoritative per-case rows land at the end.
+ *  error/steps ride on newer runners; undefined = older runner, failures
+ *  then surface only once the finished report lands. */
+export type RunnerProgressCase = {
+  title: string;
+  file?: string;
+  status: "passed" | "failed" | "skipped";
+  durationMs: number;
+  /** Test-level failure text (timeouts, expect failures outside test.step). */
+  error?: string;
+  /** The test.step blocks recorded for this test, in execution order. */
+  steps?: RunnerProgressStep[];
+};
+
 /** Live progress snapshot from GET /status while a run is still executing —
  *  fed by the runner's in-line progress reporter (one JSON line per Playwright
- *  event). All counters are cumulative. */
+ *  event). All counters are cumulative. currentTest/currentStep/cases ride on
+ *  newer runners; undefined = older runner, the tree then just shows "Not
+ *  run" blocks without the running highlight. */
 export type RunnerRunProgress = {
   startedAt: number;
   total: number;
@@ -58,6 +85,12 @@ export type RunnerRunProgress = {
   skipped: number;
   /** Title of the most recently finished test — gives the log a heartbeat. */
   current?: string | null;
+  /** The test executing right now (workers are pinned to 1, so at most one). */
+  currentTest?: { title: string; file?: string; line?: number; startedAt?: number; steps?: RunnerProgressStep[] } | null;
+  /** The test.step(...) inside currentTest that is executing right now. */
+  currentStep?: { title: string; line?: number; startedAt?: number } | null;
+  /** Finished tests so far, in completion order. */
+  cases?: RunnerProgressCase[];
   lastEventAt?: number;
 };
 

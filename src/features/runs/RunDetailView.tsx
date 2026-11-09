@@ -3,17 +3,18 @@
 // route file here would cycle through app/router/routes (which imports
 // this page back) and vite falls back to a full page reload on every
 // HMR update of the cycle.
-import { useMemo, useState } from "react";
-import { ArrowLeft, CircleX, Link2 } from "lucide-react";
-import { projectById, runTrigger, suiteById } from "../../lib/demo/data";import type { CaseResult, Run } from "../../lib/demo/data";
-import { cancelRun, useDemoState } from "../../lib/demo/store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, Link2 } from "lucide-react";
+import { projectById, runTrigger, suiteById } from "../../lib/demo/data";
+import type { CaseResult, Run } from "../../lib/demo/data";
+import { cancelRun, subscribeRunnerProgress, runnerProgressSnapshot, useDemoState } from "../../lib/demo/store";
+import type { RunnerRunProgress } from "../../lib/runner/client";
 import { formatDateTime, formatDuration, formatMs } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { CaseTree } from "../../shared/ui/CaseTree";
+import { CaseError, CaseTree } from "../../shared/ui/CaseTree";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
-import { PageHeader } from "../../shared/ui/PageHeader";
 import { RunStatusBadge, SimulatedBadge, StatusBadge } from "../../shared/ui/StatusBadge";
 import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
@@ -31,7 +32,7 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
   /** Open a linked issue — the project page swaps in its own drill-down. */
   onOpenIssue?: (issueId: string) => void;
 }) {
-  const { runs, issues, caseResults } = useDemoState();
+  const { runs, issues, caseResults, activeRunnerRun } = useDemoState();
   const { t } = useT();
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
@@ -47,7 +48,66 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
   const project = run ? projectById(run.projectId) : undefined;
   const suite = run ? suiteById(run.suiteId) : undefined;
   const isLive = run?.status === "running" || run?.status === "pending";
-  const failedCases = cases.filter((entry) => entry.status === "failed");
+  // True when THIS record is the suite executing on the runner right now —
+  // guards the heartbeat from leaking into a different running record.
+  const isOwnedLive = isLive && !!run && activeRunnerRun?.runId === run.id;
+
+  // Live heartbeat: which test and which test.step line are executing right
+  // now. Seeded with the last snapshot so a view opened mid-run shows the
+  // current state immediately, then follows the ~2 s poll.
+  const [liveProgress, setLiveProgress] = useState<RunnerRunProgress | null>(() => runnerProgressSnapshot());
+  useEffect(() => {
+    if (!isOwnedLive) return;
+    setLiveProgress(runnerProgressSnapshot());
+    return subscribeRunnerProgress(setLiveProgress);
+  }, [isOwnedLive]);
+
+  // 1 s heartbeat so the executing block's elapsed time TICKS while it runs —
+  // dots stream instantly already, but a static "Running…" gave no sense of
+  // how long the block has been going. Mounted only while this view owns the
+  // live run (no idle timers).
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isOwnedLive) return;
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isOwnedLive]);
+
+  const liveNow = isOwnedLive ? liveProgress : null;
+  const currentTestTitle = liveNow?.currentTest?.title ?? liveNow?.current ?? null;
+  // The executing block's start: the runner's server-clock testBegin stamp
+  // when the wire carries it (true elapsed even for a view opened mid-test),
+  // else a local clock keyed on the test identity. Updating the ref during
+  // render is the documented previous-value pattern — idempotent, so the
+  // timer is correct on the very first render of a new block.
+  const testStartRef = useRef<{ title: string | null; at: number }>({ title: null, at: 0 });
+  if (currentTestTitle !== testStartRef.current.title) {
+    testStartRef.current = {
+      title: currentTestTitle,
+      at: liveNow?.currentTest?.startedAt ?? Date.now()
+    };
+  }
+  const runningElapsedMs = currentTestTitle != null && testStartRef.current.title === currentTestTitle
+    ? Math.max(0, nowTick - testStartRef.current.at)
+    : null;
+
+  // Same identity tracking for the step executing INSIDE the running block —
+  // its count-up seeds from the runner's stepBegin stamp when present, else
+  // the local clock. Between steps (stepEnd → next stepBegin) there is no
+  // current step, so the timer rests.
+  const stepKey = currentTestTitle != null && liveNow?.currentStep?.line != null
+    ? `${currentTestTitle}|${liveNow.currentStep.line}`
+    : null;
+  const stepStartRef = useRef<{ key: string | null; at: number }>({ key: null, at: 0 });
+  if (stepKey !== stepStartRef.current.key) {
+    stepStartRef.current = {
+      key: stepKey,
+      at: liveNow?.currentStep?.startedAt ?? Date.now()
+    };
+  }
+  const stepElapsedMs = stepKey != null && stepStartRef.current.key === stepKey
+    ? Math.max(0, nowTick - stepStartRef.current.at)
+    : null;
 
   // Per-block tree hydration: for runner runs whose results predate the
   // file/steps fields (or lost them to a reload), re-parse the linked
@@ -83,18 +143,48 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
       : cases.length;
   const completedCases = cases.slice(0, completedCount);
 
+  // While the suite runs, finished tests stream in through the heartbeat —
+  // the tree flips each block's dot before the authoritative rows land with
+  // the final report. Persisted rows win whenever they exist. error/steps
+  // ride the heartbeat too, so a mid-run failure renders its red dot and
+  // its error box under the failing step INSTANTLY, not after the report.
+  const live = liveNow;
+  const liveCases: CaseResult[] = (live?.cases ?? []).map((entry, index) => ({
+    id: `${run.id}-live${index}`,
+    name: entry.title,
+    file: entry.file || undefined,
+    status: entry.status,
+    durationMs: entry.durationMs,
+    error: entry.error,
+    steps: entry.steps?.map((step) => ({
+      title: step.title,
+      depth: 0,
+      durationMs: step.durationMs ?? 0,
+      error: step.error ?? undefined
+    })),
+    runId: run.id,
+    order: completedCases.length + index
+  }));
+  const treeCases = completedCases.length > 0 ? completedCases : liveCases;
+
   return (
     <section>
-      <button className="tertiary-button" onClick={onBack} style={{ marginBottom: 12 }}>
-        <ArrowLeft size={16} /> {t("common.back")}
-      </button>
-      <PageHeader
-        actions={isLive ? (
-          <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
-        ) : undefined}
-        subtitle={formatDateTime(run.startedAt)}
-        title={run.name}
-      />
+      {/* Compact title bar: back arrow + THE one heading (the run name) and
+          start time on a single row; the cancel action sits at the right
+          edge. The project page hides its own heading while this drill is
+          open, so exactly one heading is visible. */}
+      <div className="titlebar">
+        <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
+          <ArrowLeft size={16} />
+        </button>
+        <h2>{run.name}</h2>
+        <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
+        {isLive ? (
+          <div className="titlebar-actions">
+            <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
+          </div>
+        ) : null}
+      </div>
 
       <div className="chips" style={{ marginBottom: 14 }}>
         <RunStatusBadge label={t(statusKey)} status={run.status} />
@@ -130,13 +220,46 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
         <div className="panel-head">
           <h3 className="panel-title">{t("run.cases")}</h3>
           {linkedIssue && onOpenIssue ? (
-            <button className="link-button" onClick={() => onOpenIssue(linkedIssue.id)}><Link2 size={14} style={{ verticalAlign: -2 }} /> {t("run.openIssue")}: {linkedIssue.id}</button>
+            <button className="link-button" onClick={() => onOpenIssue(linkedIssue.id)}><Link2 size={14} /> {t("run.openIssue")}: {linkedIssue.id}</button>
           ) : null}
         </div>
         {cases.length === 0 && run.status !== "pending" && run.status !== "running" ? (
           <p className="muted" style={{ margin: 0 }}>{t("run.noCases")}</p>
-        ) : isRunnerRun && !isLive ? (
-          <CaseTree cases={completedCases} files={blocks ?? null} />
+        ) : !isLive && terminal ? (
+          // Finished runs render as the block tree: the failure sits directly
+          // under the block that failed (with its Open issue action) — there
+          // is no separate Failures section repeating the same errors.
+          <CaseTree
+            cases={completedCases}
+            files={blocks ?? null}
+            onOpenIssue={linkedIssue && onOpenIssue ? () => onOpenIssue(linkedIssue.id) : undefined}
+          />
+        ) : blocks ? (
+          // A live run renders the SAME tree, fed by the heartbeat: the
+          // folder's blocks all show (Not run until reached), finished ones
+          // flip as their tests end, and the executing block + step pulse.
+          // Without a spec parse (folder closed) the flat table below stays.
+          <CaseTree
+            cases={treeCases}
+            files={blocks}
+            running={live
+              ? {
+                  // New runners report the structured currentTest (title +
+                  // file). Older ones only carry the plain `current` title
+                  // string — still enough to pulse the executing test row,
+                  // just without file/step precision.
+                  testTitle: currentTestTitle,
+                  file: live.currentTest?.file,
+                  stepLine: live.currentStep?.line ?? null,
+                  // Live count-up on the executing block; null when idle.
+                  elapsedMs: runningElapsedMs,
+                  // Steps already closed inside the running test — the tree
+                  // flips each one's dot/duration/error the moment it ends.
+                  finishedSteps: live.currentTest?.steps,
+                  stepElapsedMs
+                }
+              : undefined}
+          />
         ) : (
           <DataTable
             columns={[
@@ -156,29 +279,6 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
         )}
       </div>
 
-      {terminal && run.failed > 0 ? (
-        <div className="panel">
-          <div className="panel-head">
-            <h3 className="panel-title">{t("run.failures")}</h3>
-          </div>
-          <div className="failure-list">
-            {failedCases.map((entry) => (
-              <div className="failure-card" key={entry.id}>
-                <div className="failure-card-head">
-                  <CircleX size={15} style={{ color: "hsl(var(--destructive))" }} />
-                  <span className="mono">{entry.name}</span>
-                </div>
-                <pre>{entry.error}</pre>
-                {linkedIssue && onOpenIssue ? (
-                  <button className="link-button" onClick={() => onOpenIssue(linkedIssue.id)}>
-                    {t("run.openIssue")}
-                  </button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
       {terminal && run.failed === 0 ? <p className="muted">{t("run.noFailures")}</p> : null}
 
       {confirmingCancel ? (

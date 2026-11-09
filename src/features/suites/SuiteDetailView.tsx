@@ -13,7 +13,6 @@ import { useT } from "../../lib/i18n/LocalizationProvider";
 import { CaseTree } from "../../shared/ui/CaseTree";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
-import { PageHeader } from "../../shared/ui/PageHeader";
 import { SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 import { getWorkspaceInfo, useWorkspaceInfo } from "../../shared/workspaceRegistry";
 import { readSavedRoot } from "../workbench/data/useTestWorkspace";
@@ -73,10 +72,15 @@ export function SuiteDetailView({ suiteId, onBack, onOpenRun }: {
 
   return (
     <section>
-      <button className="tertiary-button" onClick={onBack} style={{ marginBottom: 12 }}>
-        <ArrowLeft size={16} /> {t("common.back")}
-      </button>
-      <PageHeader subtitle={suite.description} title={suite.name} />
+      {/* Compact title bar: back arrow, suite name and its description on
+          ONE row — same pattern as the project page's titlebar. */}
+      <div className="titlebar">
+        <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
+          <ArrowLeft size={16} />
+        </button>
+        <h2>{suite.name}</h2>
+        <span className="titlebar-meta">{suite.description}</span>
+      </div>
 
       <div className="chips" style={{ marginBottom: 16 }}>
         <SuiteStatusBadge

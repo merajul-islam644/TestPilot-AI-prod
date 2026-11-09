@@ -9,7 +9,6 @@ import { setIssueStatus, useDemoState } from "../../lib/demo/store";
 import { formatDateTime, formatRelative } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { EmptyState } from "../../shared/ui/EmptyState";
-import { PageHeader } from "../../shared/ui/PageHeader";
 import { IssueStatusBadge, SeverityBadge } from "../../shared/ui/StatusBadge";
 import { ISSUE_STATUS_KEYS, SEVERITY_KEYS } from "./issueColumns";
 
@@ -40,25 +39,26 @@ export function IssueDetailView({ issueId, onBack, onOpenRun }: {
 
   return (
     <section>
-      <button className="tertiary-button" onClick={onBack} style={{ marginBottom: 12 }}>
-        <ArrowLeft size={16} /> {t("common.back")}
-      </button>
-      <PageHeader
-        actions={(
-          <>
-            {issue.status === "open" ? (
-              <button className="secondary-button" onClick={() => setIssueStatus(issue.id, "in_progress")}>{t("issue.startProgress")}</button>
-            ) : null}
-            {issue.status === "resolved" ? (
-              <button className="tertiary-button" onClick={() => setIssueStatus(issue.id, "open")}>{t("issue.reopen")}</button>
-            ) : (
-              <button className="primary-button" onClick={() => setIssueStatus(issue.id, "resolved")}>{t("issue.resolve")}</button>
-            )}
-          </>
-        )}
-        subtitle={issue.id}
-        title={issue.title}
-      />
+      {/* Compact title bar: back arrow, issue title and id on ONE row, with
+          the status actions at the right edge — same pattern as the project
+          page's titlebar. */}
+      <div className="titlebar">
+        <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
+          <ArrowLeft size={16} />
+        </button>
+        <h2>{issue.title}</h2>
+        <span className="titlebar-meta">{issue.id}</span>
+        <div className="titlebar-actions">
+          {issue.status === "open" ? (
+            <button className="secondary-button" onClick={() => setIssueStatus(issue.id, "in_progress")}>{t("issue.startProgress")}</button>
+          ) : null}
+          {issue.status === "resolved" ? (
+            <button className="tertiary-button" onClick={() => setIssueStatus(issue.id, "open")}>{t("issue.reopen")}</button>
+          ) : (
+            <button className="primary-button" onClick={() => setIssueStatus(issue.id, "resolved")}>{t("issue.resolve")}</button>
+          )}
+        </div>
+      </div>
 
       <div className="chips" style={{ marginBottom: 16 }}>
         <SeverityBadge label={t(SEVERITY_KEYS[issue.severity])} severity={issue.severity} />

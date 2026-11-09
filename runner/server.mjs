@@ -27,11 +27,17 @@ const PORT = Number(process.env.PORT || 9090);
 // `activeRun`, and GET /status serves the snapshot to the app while the
 // suite still runs. Written fresh each run (never part of files[]) so a
 // workspace cannot shadow or break it.
-const PROGRESS_REPORTER_SOURCE = `export default class ProgressReporter {
+const PROGRESS_REPORTER_SOURCE = `import { relative as relPath, sep as pathSep } from "node:path";
+
+export default class ProgressReporter {
   completed = 0;
   passed = 0;
   failed = 0;
   skipped = 0;
+  // test.step results of the CURRENT test, attached to its testEnd event so
+  // the app can flip each step's dot (and pin the error under the failing
+  // step) the moment the test finishes — not only after the whole suite.
+  currentSteps = [];
   onBegin(_config, suite) {
     // This Playwright version passes TWO arguments: onBegin(config, suite).
     // Declaring one left us inspecting the FullConfig — suite.allTests()
@@ -46,19 +52,84 @@ const PROGRESS_REPORTER_SOURCE = `export default class ProgressReporter {
     return (suite.tests?.length ?? 0)
       + (suite.suites ?? []).reduce((sum, child) => sum + this.countTests(child), 0);
   }
+  // Which spec file + block is executing RIGHT NOW. workers are pinned to 1
+  // (buildConfig), so at most one test runs at a time and latest-wins is
+  // exact. The file path is normalized to the workspace-relative forward-
+  // slash form the app's spec parse keys on.
+  onTestBegin(test) {
+    this.currentSteps = [];
+    const file = test.location?.file
+      ? relPath(process.cwd(), test.location.file).split(pathSep).join("/")
+      : undefined;
+    this.emit({ type: "testBegin", title: test.title, file, line: test.location?.line });
+  }
+  // Only explicit test.step(...) calls — the same units the app's static
+  // parse shows as steps (expect/fixture/API-call steps are noise here).
+  onStepBegin(_test, _result, step) {
+    if (step.category !== "test.step") return;
+    this.emit({ type: "stepBegin", title: step.title, line: step.location?.line });
+  }
+  onStepEnd(_test, _result, step) {
+    if (step.category !== "test.step") return;
+    // Carries the finished step's own result on the same line the server
+    // treats as its clear-currentStep signal — so the app flips the step's
+    // dot, duration and (when failed) error the instant the step closes,
+    // without waiting for this test's testEnd.
+    const message = step.error && typeof step.error.message === "string"
+      ? step.error.message.slice(0, 1500)
+      : undefined;
+    this.emit({
+      type: "stepEnd",
+      title: step.title,
+      line: step.location?.line,
+      durationMs: Math.max(0, Math.round(step.duration ?? 0)),
+      error: message ?? null
+    });
+    this.currentSteps.push({
+      title: step.title,
+      line: step.location?.line,
+      error: message ?? null,
+      durationMs: Math.max(0, Math.round(step.duration ?? 0))
+    });
+  }
   onTestEnd(test, result) {
     this.completed += 1;
-    if (result.status === "passed") this.passed += 1;
-    else if (result.status === "skipped") this.skipped += 1;
+    const status = result.status === "passed" ? "passed" : result.status === "skipped" ? "skipped" : "failed";
+    if (status === "passed") this.passed += 1;
+    else if (status === "skipped") this.skipped += 1;
     else this.failed += 1;
+    // Test-level error text (timeouts, expect failures outside a test.step,
+    // hook errors). The app renders it under the failing step when a step
+    // carries the same message, else under the block as the fallback — so
+    // always sending it is safe. expect() steps are category "expect", NOT
+    // "test.step" — they never enter currentSteps, which is exactly why
+    // this fallback is what surfaces them. NOTE: this whole class lives in
+    // a template literal, so a newline inside a string literal must be
+    // written \\n — a bare \\n unescapes to a REAL newline and the
+    // materialized reporter stops parsing (Babel UnterminatedString →
+    // every run 500s with "Playwright produced no report").
+    const testError = status === "failed"
+      ? (result.errors ?? [])
+          .map((entry) => (entry && typeof entry.message === "string" ? entry.message : ""))
+          .join("\\n")
+          .slice(0, 1500)
+      : undefined;
     this.emit({
       type: "testEnd",
       title: test.title,
+      file: test.location?.file
+        ? relPath(process.cwd(), test.location.file).split(pathSep).join("/")
+        : undefined,
+      status,
+      durationMs: result.duration ?? 0,
+      error: testError || undefined,
+      steps: this.currentSteps,
       completed: this.completed,
       passed: this.passed,
       failed: this.failed,
       skipped: this.skipped
     });
+    this.currentSteps = [];
   }
   onEnd() {
     this.emit({ type: "end", completed: this.completed, passed: this.passed, failed: this.failed, skipped: this.skipped });
@@ -217,12 +288,73 @@ function applyProgressEvent(event) {
   if (event.type === "begin" && typeof event.total === "number") {
     activeRun.total = event.total;
     activeRun.lastEventAt = Date.now();
+  } else if (event.type === "testBegin") {
+    activeRun.currentTest = {
+      title: typeof event.title === "string" ? event.title : "",
+      file: typeof event.file === "string" ? event.file : undefined,
+      line: typeof event.line === "number" ? event.line : undefined,
+      // Server clock at testBegin — the app's live block timer seeds from
+      // this, so a view opened mid-test shows true elapsed immediately.
+      startedAt: Date.now()
+    };
+    activeRun.currentStep = null;
+    activeRun.lastEventAt = Date.now();
+  } else if (event.type === "stepBegin") {
+    if (activeRun.currentTest) {
+      activeRun.currentStep = {
+        title: typeof event.title === "string" ? event.title : "",
+        line: typeof event.line === "number" ? event.line : undefined,
+        // Server clock at stepBegin — seeds the app's live step timer.
+        startedAt: Date.now()
+      };
+    }
+    activeRun.lastEventAt = Date.now();
+  } else if (event.type === "stepEnd") {
+    // The finished step rides on the same line that clears currentStep —
+    // its dot, duration and (when failed) error show the moment the step
+    // closes, without waiting for this test's testEnd. Capped so a patho-
+    // logical spec cannot grow the status object unbounded.
+    if (activeRun.currentTest && typeof event.title === "string") {
+      const steps = activeRun.currentTest.steps ?? (activeRun.currentTest.steps = []);
+      if (steps.length < 400) {
+        steps.push({
+          title: event.title,
+          line: typeof event.line === "number" ? event.line : undefined,
+          durationMs: typeof event.durationMs === "number" ? event.durationMs : 0,
+          error: typeof event.error === "string" && event.error.length > 0 ? event.error : undefined
+        });
+      }
+    }
+    activeRun.currentStep = null;
+    activeRun.lastEventAt = Date.now();
   } else if (event.type === "testEnd") {
     if (typeof event.passed === "number") activeRun.passed = event.passed;
     if (typeof event.failed === "number") activeRun.failed = event.failed;
     if (typeof event.skipped === "number") activeRun.skipped = event.skipped;
     if (typeof event.completed === "number") activeRun.completed = event.completed;
     if (typeof event.title === "string" && event.title.length > 0) activeRun.current = event.title;
+    // Feed the live case list the app's tree flips dots from. error/steps
+    // ride along so failures render INSTANTLY (red dot + error under the
+    // failing step) — not only once the finished report lands.
+    if (typeof event.title === "string" && event.title.length > 0) {
+      activeRun.cases.push({
+        title: event.title,
+        file: typeof event.file === "string" ? event.file : undefined,
+        status: event.status === "passed" || event.status === "skipped" ? event.status : "failed",
+        durationMs: typeof event.durationMs === "number" ? Math.max(0, Math.round(event.durationMs)) : 0,
+        error: typeof event.error === "string" && event.error.length > 0 ? event.error : undefined,
+        steps: Array.isArray(event.steps)
+          ? event.steps.slice(0, 400).map((step) => ({
+              title: step && typeof step.title === "string" ? step.title : "",
+              line: step && typeof step.line === "number" ? step.line : undefined,
+              error: step && typeof step.error === "string" && step.error.length > 0 ? step.error : null,
+              durationMs: step && typeof step.durationMs === "number" ? Math.max(0, Math.round(step.durationMs)) : 0
+            }))
+          : undefined
+      });
+    }
+    activeRun.currentTest = null;
+    activeRun.currentStep = null;
     activeRun.lastEventAt = Date.now();
   } else if (event.type === "end") {
     if (activeRun.total > 0) activeRun.completed = activeRun.total;
@@ -246,6 +378,9 @@ app.get("/status", (_req, res) => {
         failed: activeRun.failed,
         skipped: activeRun.skipped,
         current: activeRun.current,
+        currentTest: activeRun.currentTest,
+        currentStep: activeRun.currentStep,
+        cases: activeRun.cases,
         lastEventAt: activeRun.lastEventAt
       }
     : null;
@@ -1283,6 +1418,9 @@ app.post("/run", async (req, res) => {
       failed: 0,
       skipped: 0,
       current: null,
+      currentTest: null,
+      currentStep: null,
+      cases: [],
       lastEventAt: Date.now()
     };
     activeRun = startedRun;

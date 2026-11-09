@@ -1,21 +1,28 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, Pencil, Plus, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { ArrowLeft, Plus, Search } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
-import { useShell } from "../../app/layout/ShellContext";
 import { derivedSuiteForProject, projectById } from "../../lib/demo/data";
-import { cancelRun, deleteProject, useDemoState } from "../../lib/demo/store";
+import type { RunStatus } from "../../lib/demo/data";
+import { cancelRun, runPlaywrightTests, useActiveRunnerRun, useDemoState } from "../../lib/demo/store";
+import { RUNNER_MAX_FILES } from "../../lib/runner/client";
+import { localFolder } from "../../lib/workspace/localFolder";
+import type { FolderNode } from "../../lib/workspace/localFolder";
+import { CODE_FILE_EXTENSIONS, isRunnableSpecPath } from "../../lib/workspace/importFiles";
+import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
-import { formatDate, formatPercent, formatRelative, healthDotClass, healthFromRate } from "../../lib/format";
+import { getDefaultEnvironment } from "../../shared/useWorkspaceName";
+import { DEFAULT_BASE_URL, readSavedRoot, readSavedSettings } from "../workbench/data/useTestWorkspace";
+import { formatDate, formatPercent, formatRelative } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { ChartCard, ChartLegend } from "../../shared/charts/ChartCard";
 import { StackedColumns } from "../../shared/charts/StackedColumns";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
-import { PageHeader } from "../../shared/ui/PageHeader";
+import { CaseTree } from "../../shared/ui/CaseTree";
+import { Select } from "../../shared/ui/select";
 import { StatusBadge, SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 import { Tabs } from "../../shared/ui/Tabs";
-import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectTestsTab } from "./ProjectTestsTab";
 // The detail VIEWS (not the route pages) are imported here on purpose:
 // the route pages pull in app/router/routes.tsx, which imports this page
@@ -25,13 +32,15 @@ import { ProjectTestsTab } from "./ProjectTestsTab";
 import { IssueDetailView } from "../issues/IssueDetailView";
 import { useIssueColumns } from "../issues/issueColumns";
 import { RunDetailView } from "../runs/RunDetailView";
-import { useRunColumns } from "../runs/runColumns";
+import { RUN_STATUS_KEYS, useRunColumns } from "../runs/runColumns";
 import { SuiteDetailView } from "../suites/SuiteDetailView";
 import { ProjectIcon } from "./ProjectIcon";
 
 type Tab = "summary" | "runs" | "suites" | "tests" | "issues" | "activity";
-const TAB_IDS: Tab[] = ["summary", "runs", "suites", "tests", "issues", "activity"];
+const TAB_IDS: Tab[] = ["tests", "summary", "suites", "runs", "issues", "activity"];
 const DAY_MS = 86_400_000;
+/** The runner refuses files over its per-file cap (mirrors NewRunModal). */
+const RUNNER_FILE_CAP = 200_000;
 
 /** In-context drill-down: opens run/issue/suite detail INSIDE the project
  *  page — never the sidebar's global pages. A linked list so Back walks
@@ -41,13 +50,14 @@ type Drill = { kind: DrillKind; id: string; prev: Drill | null };
 const DRILL_KINDS: DrillKind[] = ["run", "issue", "suite"];
 
 /** The active tab lives in the URL (?tab=…), so a refresh or a shared
- *  link reopens the same view. Unknown/missing param → Summary. */
+ *  link reopens the same view. Unknown/missing param → Playwright Editor:
+ *  the first tab, where the day-to-day authoring happens. */
 function initialTab(): Tab {
   try {
     const param = new URLSearchParams(window.location.search).get("tab");
-    return TAB_IDS.includes(param as Tab) ? (param as Tab) : "summary";
+    return TAB_IDS.includes(param as Tab) ? (param as Tab) : "tests";
   } catch {
-    return "summary";
+    return "tests";
   }
 }
 
@@ -68,23 +78,44 @@ function initialDrill(): Drill | null {
 export function ProjectDetailPage() {
   const { params, navigate } = useRoute();
   const { runs, issues } = useDemoState();
-  const { openNewRun } = useShell();
   const { t } = useT();
   const [tab, setTabState] = useState<Tab>(initialTab);
   const [drill, setDrill] = useState<Drill | null>(initialDrill);
-  const [formOpen, setFormOpen] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [startingRun, setStartingRun] = useState(false);
+  // This page IS the project scope, so its New test run skips the global
+  // modal and dispatches this project's Playwright specs straight away.
+  // It can only do that with an open runner-mode folder holding specs —
+  // anything else (no folder, browser-picked folder, zero specs) keeps the
+  // button disabled with the reason on hover.
+  const workspaceInfo = useWorkspaceInfo(params.projectId ?? "");
+  const activeRunnerRun = useActiveRunnerRun();
+  const savedRoot = params.projectId ? readSavedRoot(params.projectId) : null;
+  const canRunDirect = Boolean(
+    savedRoot?.root
+    && savedRoot.mode === "runner"
+    && workspaceInfo
+    && workspaceInfo.specPaths.length > 0
+  );
+  const runInFlight = activeRunnerRun?.projectId === params.projectId;
+
+  // Static spec parse of the open runner-mode folder — this is what the
+  // suites tab previews (every block and step, before anything runs) and
+  // what a live run's tree hydrates against.
+  const runnerRoot = savedRoot?.mode === "runner" ? savedRoot.root : null;
+  const specPaths = useMemo(() => workspaceInfo?.specPaths ?? [], [workspaceInfo]);
+  const blocks = useSpecBlocks(runnerRoot, specPaths);
 
   // Tab switches are written into the URL with replaceState (no history
-  // spam): /projects/:id?tab=tests. "summary" is the default and stays
-  // query-free, so the plain project URL always opens the overview.
+  // spam): /projects/:id?tab=summary. "tests" (Playwright Editor) is the
+  // first tab and the default, so it stays query-free — the plain project
+  // URL opens the editor where the day-to-day work happens.
   // A drill adds ?sub=<kind>:<id> on top of the current tab.
   function setTab(next: Tab) {
     setTabState(next);
     setDrill(null);
     try {
       const url = new URL(window.location.href);
-      if (next === "summary") url.searchParams.delete("tab");
+      if (next === "tests") url.searchParams.delete("tab");
       else url.searchParams.set("tab", next);
       url.searchParams.delete("sub");
       window.history.replaceState({}, "", `${url.pathname}${url.search}`);
@@ -128,6 +159,15 @@ export function ProjectDetailPage() {
   const project = projectById(params.projectId ?? "");
   const projectRuns = useMemo(() => runs.filter((run) => run.projectId === params.projectId), [params.projectId, runs]);
   const projectIssues = useMemo(() => issues.filter((issue) => issue.projectId === params.projectId), [issues, params.projectId]);
+  // Runs-tab filters — the global runs page's search + status pattern minus
+  // the project select, because this page already IS the project scope.
+  const [runStatusFilter, setRunStatusFilter] = useState<RunStatus | "">("");
+  const [runQuery, setRunQuery] = useState("");
+  const filteredRuns = useMemo(() => projectRuns.filter((run) => {
+    if (runStatusFilter && run.status !== runStatusFilter) return false;
+    if (runQuery && !`${run.name} ${run.id}`.toLowerCase().includes(runQuery.toLowerCase())) return false;
+    return true;
+  }), [projectRuns, runQuery, runStatusFilter]);
   // Suites derive from the opened workspace (Rasta B) — the registry
   // subscription makes this re-render when a folder opens or closes.
   const workspace = useWorkspaceInfo(params.projectId ?? "");
@@ -178,18 +218,84 @@ export function ProjectDetailPage() {
   const passedTests = last30.reduce((sum, run) => sum + run.passed, 0);
   const failedTests = last30.reduce((sum, run) => sum + run.failed, 0);
   const successRate = passedTests + failedTests > 0 ? (passedTests / (passedTests + failedTests)) * 100 : 0;
-  const health = healthFromRate(successRate);
   const openIssues = projectIssues.filter((issue) => issue.status !== "resolved").length;
   const latestRun = [...projectRuns].sort((a, b) => b.startedAt - a.startedAt).find((run) => run.status === "passed" || run.status === "failed");
 
   const tabs: { id: Tab; label: string }[] = [
-    { id: "summary", label: t("projects.tabSummary") },
-    { id: "runs", label: t("projects.tabRuns") },
-    { id: "suites", label: t("projects.tabSuites") },
     { id: "tests", label: t("projects.tabTests") },
+    { id: "summary", label: t("projects.tabSummary") },
+    { id: "suites", label: t("projects.tabSuites") },
+    { id: "runs", label: t("projects.tabRuns") },
     { id: "issues", label: t("projects.tabIssues") },
     { id: "activity", label: t("projects.tabActivity") }
   ];
+
+  // Direct dispatch: the New Run modal's submit minus the form — this page
+  // already knows the project. Reads the specs through the runner, hands
+  // them to the store, then lands on the editor tab so the live milestones
+  // are visible immediately.
+  async function runProjectSpecs() {
+    if (!project) return;
+    const root = savedRoot?.root;
+    const specPaths = workspaceInfo?.specPaths ?? [];
+    if (!canRunDirect || startingRun || !root || specPaths.length === 0) return;
+    setStartingRun(true);
+    try {
+      // Specs share the file budget with the code files they import — the
+      // same shape the editor's dispatch sends. Specs-only starved the
+      // helper set once: a spec's "../../support/test-base" import cannot
+      // resolve when the helper never lands in the temp project, and the
+      // runner answers 422 "could not load the specs". `root` rides along
+      // so workspace .env values reach the runner from disk (never app state).
+      const selected = specPaths.slice(0, RUNNER_MAX_FILES);
+      const files: { name: string; content: string }[] = [];
+      for (const path of selected) {
+        const content = await localFolder.readUserFile({ root, path });
+        if (content !== null) files.push({ name: path, content });
+      }
+      const helperBudget = Math.max(0, RUNNER_MAX_FILES - files.length);
+      if (helperBudget > 0) {
+        const { tree } = await localFolder.listTree({ root });
+        const walk = (nodes: FolderNode[]): string[] =>
+          nodes.flatMap((node) => (node.kind === "dir" && node.children ? walk(node.children) : [node.path]));
+        const helperPaths = walk(tree)
+          .filter((path) => !isRunnableSpecPath(path) && CODE_FILE_EXTENSIONS.test(path))
+          .slice(0, helperBudget);
+        for (const path of helperPaths) {
+          const content = await localFolder.readUserFile({ root, path });
+          if (content && content.length > 0 && content.length <= RUNNER_FILE_CAP) files.push({ name: path, content });
+        }
+      }
+      const sendable = files.filter((file) => file.content.length <= RUNNER_FILE_CAP);
+      if (sendable.length === 0) {
+        toast.error(t("tests.noSpecs"));
+        setStartingRun(false);
+        return;
+      }
+      const baseURL = readSavedSettings(project.id)?.baseURL || DEFAULT_BASE_URL;
+      void runPlaywrightTests({
+        projectId: project.id,
+        environment: getDefaultEnvironment(),
+        baseURL,
+        root,
+        files: sendable
+      }).catch((error: unknown) => {
+        // The dispatch already created a Running record, so this failure must
+        // surface: a silent catch here once ate the runner's "could not load
+        // the specs" 422 and the run just sat there with nothing to explain it.
+        toast.error(t("toast.runnerFailed"), {
+          description: error instanceof Error ? error.message.slice(0, 400) : undefined
+        });
+      });
+      setStartingRun(false);
+      setTab("tests");
+    } catch (error) {
+      toast.error(t("toast.runnerFailed"), {
+        description: error instanceof Error ? error.message.slice(0, 200) : undefined
+      });
+      setStartingRun(false);
+    }
+  }
 
   return (
     <section>
@@ -197,36 +303,25 @@ export function ProjectDetailPage() {
           only its own Back (which closes the drill) shows — two identical
           Backs stacked read as a bug. The project Back returns when the
           drill closes. */}
+      {/* Compact title bar: a bare back arrow and the project name share ONE
+          row. Health badge, tags and the Back label all lived here before,
+          but nothing functioned off them and the bar read as noise. While a
+          drill is open the bar hides entirely — the drill carries its own
+          compact titlebar, and the project name already rides in its chips. */}
       {!drill ? (
-        <button className="tertiary-button" onClick={() => navigate("/projects")} style={{ marginBottom: 12 }}>
-          <ArrowLeft size={16} /> {t("common.back")}
-        </button>
+        <div className="titlebar">
+          <button
+            aria-label={t("common.back")}
+            className="tertiary-button"
+            onClick={() => navigate("/projects")}
+            title={t("common.back")}
+            type="button"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <h2>{project.name}</h2>
+        </div>
       ) : null}
-      <PageHeader
-        actions={(
-          <>
-            <button className="secondary-button" onClick={() => setFormOpen(true)}>
-              <Pencil size={15} /> {t("common.edit")}
-            </button>
-            <button className="danger-button" onClick={() => setConfirmingDelete(true)}>
-              <Trash2 size={15} /> {t("common.delete")}
-            </button>
-            <button className="primary-button" onClick={openNewRun}>
-              <Plus size={16} /> {t("overview.newRun")}
-            </button>
-          </>
-        )}
-        subtitle={project.description}
-        title={project.name}
-      />
-
-      <div className="chips" style={{ marginBottom: 16 }}>
-        <span className="badge badge-neutral">
-          <span className={`health-dot ${healthDotClass(health.tone)}`} />
-          {t(health.labelKey)}
-        </span>
-        {project.tags.map((tag) => <span className="chip" key={tag}>{tag}</span>)}
-      </div>
 
       {/* A drilled detail replaces the tabs AND tab content entirely — the
           project stays the context, the sidebar is never involved. */}
@@ -252,7 +347,26 @@ export function ProjectDetailPage() {
         )
       ) : (
         <>
-          <Tabs active={tab} onChange={setTab} tabs={tabs} />
+          {/* The project's primary action lives at TAB level — same row as
+              the strip, right-aligned — not floating in the page header.
+              Project-scoped: no modal, it runs this project's specs
+              directly, and stays disabled until a folder is open. */}
+          <Tabs
+            active={tab}
+            actions={(
+              <button
+                className="primary-button"
+                disabled={!canRunDirect || startingRun || runInFlight}
+                onClick={() => void runProjectSpecs()}
+                title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
+                type="button"
+              >
+                <Plus size={16} /> {startingRun ? t("newRun.starting") : t("overview.newRun")}
+              </button>
+            )}
+            onChange={setTab}
+            tabs={tabs}
+          />
 
           {tab === "summary" ? (
         <>
@@ -293,6 +407,9 @@ export function ProjectDetailPage() {
               )}
             </div>
           </div>
+          {/* Stacked full-width panels flow inside one gap — .panel has no
+              margin of its own, so siblings would otherwise touch. */}
+          <div className="stack">
           <div className="panel">
             <div className="panel-head">
               <h3 className="panel-title">{t("projects.workspace.title")}</h3>
@@ -323,12 +440,36 @@ export function ProjectDetailPage() {
             </div>
             <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 6)} />
           </div>
+          </div>
         </>
       ) : null}
 
       {tab === "runs" ? (
         projectRuns.length > 0 ? (
-          <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns} />
+          <>
+            <div className="toolbar">
+              <label className="search-box">
+                <Search size={15} />
+                <input onChange={(event) => setRunQuery(event.target.value)} placeholder={t("runs.searchPlaceholder")} value={runQuery} />
+              </label>
+              <div className="toolbar-actions">
+                <Select
+                  ariaLabel={t("common.status")}
+                  items={[
+                    { value: "", label: t("runs.filterStatus") },
+                    ...(Object.keys(RUN_STATUS_KEYS) as RunStatus[]).map((status) => ({ value: status, label: t(RUN_STATUS_KEYS[status]) }))
+                  ]}
+                  onChange={(value) => setRunStatusFilter(value as RunStatus | "")}
+                  value={runStatusFilter}
+                />
+              </div>
+            </div>
+            {filteredRuns.length > 0 ? (
+              <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={filteredRuns} />
+            ) : (
+              <EmptyState description={t("common.notFound")} title={t("runs.empty")} />
+            )}
+          </>
         ) : (
           <EmptyState
             action={<button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>}
@@ -340,25 +481,69 @@ export function ProjectDetailPage() {
 
       {tab === "suites" ? (
         derivedSuite ? (
-          <DataTable
-            columns={[
-              {
-                key: "name",
-                header: t("common.name"),
-                render: (suite) => (
-                  <span style={{ display: "grid", gap: 2 }}>
-                    <span className="table-link">{suite.name}</span>
-                    <span className="muted" style={{ fontSize: 12.5 }}>{suite.description}</span>
+          <>
+            {/* Suite hero + recent runs flow inside one gap (see .stack). */}
+            <div className="stack">
+            {/* Suite hero: what the derived suite IS (specs + folder) and its
+                two actions. Run suite reuses the tab-level direct dispatch,
+                so it obeys the same disabled rules as New test run. */}
+            <div className="panel">
+              <div className="suite-hero">
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10 }}>
+                    <h3 className="suite-hero-name">{derivedSuite.name}</h3>
+                    <SuiteStatusBadge label={t("suite.active")} status={derivedSuite.status} />
+                  </div>
+                  <p className="muted" style={{ margin: "4px 0 10px" }}>{derivedSuite.description}</p>
+                  <div className="chips">
+                    <span className="chip">{t("common.owner")}: {derivedSuite.owner}</span>
+                    <span className="chip">{t("suite.lastUpdated")}: {formatRelative(derivedSuite.lastUpdatedAt)}</span>
+                  </div>
+                </div>
+                <div style={{ alignItems: "center", display: "flex", flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
+                  <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
+                  <button
+                    className="primary-button"
+                    disabled={!canRunDirect || startingRun || runInFlight}
+                    onClick={() => void runProjectSpecs()}
+                    title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
+                    type="button"
+                  >
+                    {startingRun ? t("newRun.starting") : t("suite.runNow")}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {/* The folder's whole suite as a tree — every block and its steps,
+                visible the moment the folder opens (nothing has run yet, so
+                every dot shows Not run). The run tree on the runs tab fills
+                these dots in as results land. */}
+            {blocks && blocks.length > 0 ? (
+              <div className="panel">
+                <div className="panel-head">
+                  <h3 className="panel-title">{t("suite.specBlocks")}</h3>
+                  <span className="muted">
+                    {blocks.reduce((sum, group) => sum + group.tests.length, 0)} {t("common.tests")}
                   </span>
-                )
-              },
-              { key: "status", header: t("common.status"), render: (suite) => <SuiteStatusBadge label={t(suite.status === "active" ? "suite.active" : suite.status === "draft" ? "suite.draft" : "suite.archived")} status={suite.status} /> },
-              { key: "owner", header: t("common.owner"), render: (suite) => suite.owner },
-              { key: "updated", header: t("suite.lastUpdated"), render: (suite) => formatRelative(suite.lastUpdatedAt) }
-            ]}
-            onRowClick={(suite) => openDrill("suite", suite.id)}
-            rows={[derivedSuite]}
-          />
+                </div>
+                <CaseTree cases={[]} files={blocks} />
+              </div>
+            ) : null}
+            {/* This project's runs ARE this suite's runs (one derived suite
+                per project), so recent runs = the project's latest five. */}
+            <div className="panel">
+              <div className="panel-head">
+                <h3 className="panel-title">{t("suite.recentRuns")}</h3>
+                <button className="link-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
+              </div>
+              {projectRuns.length > 0 ? (
+                <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 5)} />
+              ) : (
+                <p className="muted">{t("suite.noRuns")}</p>
+              )}
+            </div>
+            </div>
+          </>
         ) : (
           <EmptyState
             action={<button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>}
@@ -411,19 +596,6 @@ export function ProjectDetailPage() {
         </>
       )}
 
-      {formOpen ? <ProjectFormModal onClose={() => setFormOpen(false)} project={project} /> : null}
-      {confirmingDelete ? (
-        <ConfirmDialog
-          confirmLabel={t("common.delete")}
-          message={`${project.name} — ${t("projects.deleteConfirm")}`}
-          onCancel={() => setConfirmingDelete(false)}
-          onConfirm={() => {
-            deleteProject(project.id);
-            navigate("/projects");
-          }}
-          title={t("projects.deleteTitle")}
-        />
-      ) : null}
     </section>
   );
 }

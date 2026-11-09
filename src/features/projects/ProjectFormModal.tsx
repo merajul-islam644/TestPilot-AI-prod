@@ -77,7 +77,7 @@ export function ProjectFormModal({ onClose, project }: { onClose: () => void; pr
           <textarea onChange={(event) => setDescription(event.target.value)} placeholder={t("projects.form.descriptionPlaceholder")} value={description} />
         </label>
         <label className="form-field" style={{ gridColumn: "1 / -1" }}>
-          <span>{t("projects.form.tags")}</span>
+          <span>{t("projects.form.tags")} <span className="field-optional">({t("common.optional")})</span></span>
           <input onChange={(event) => setTagsText(event.target.value)} placeholder={t("projects.form.tagsPlaceholder")} value={tagsText} />
         </label>
         {attempted && !valid ? (

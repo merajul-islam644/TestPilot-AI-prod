@@ -62,7 +62,18 @@ export function useActiveRunnerRun(): { runId: string; projectId: string } | nul
   return useSyncExternalStore(subscribe, () => state.activeRunnerRun);
 }
 
+/** The most recent /status heartbeat, kept so a view mounting mid-run (the
+ *  run detail opened after the suite started) sees the last known snapshot
+ *  immediately instead of waiting out the next ~2 s poll. */
+let lastRunnerProgress: RunnerRunProgress | null = null;
+
+/** Latest /status snapshot, or null before the first heartbeat of a run. */
+export function runnerProgressSnapshot(): RunnerRunProgress | null {
+  return lastRunnerProgress;
+}
+
 function notifyProgressListeners(progress: RunnerRunProgress): void {
+  lastRunnerProgress = progress;
   for (const callback of progressListeners) callback(progress);
 }
 
@@ -90,7 +101,14 @@ async function refresh(): Promise<void> {
         console.warn("[TestPilot] CaseResult load failed:", error);
         return [] as cloud.StoredCase[];
       });
-      emit({ status: "ready", runs: sortRuns(dedupeRuns(snapshot.runs)), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
+      // Legacy default run names carried a "Playwright · " prefix; display
+      // them as the bare project name so run headers read clean. Display-
+      // level only — the stored record is left as written.
+      const runs = snapshot.runs.map((run) => {
+        const projectName = projects.find((entry) => entry.id === run.projectId)?.name;
+        return projectName && run.name === `Playwright · ${projectName}` ? { ...run, name: projectName } : run;
+      });
+      emit({ status: "ready", runs: sortRuns(dedupeRuns(runs)), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
       // A dispatch whose page died mid-run leaves a stale "Running" record.
       // Ask the runner what actually happened and repair it (below).
       void reconcileRunnerRuns();
@@ -457,7 +475,7 @@ export async function runPlaywrightTests(input: {
   const now = Date.now();
   const run: Run = {
     id,
-    name: input.name?.trim() || `Playwright · ${project.name}`,
+    name: input.name?.trim() || project.name,
     projectId: input.projectId,
     suiteId: suite.id,
     environment: input.environment ?? "staging",

@@ -12,7 +12,7 @@
 //     changed since the run).
 
 import { useMemo } from "react";
-import { FileCode2 } from "lucide-react";
+import { CircleCheck, CircleX, FileCode2 } from "lucide-react";
 import type { CaseResult, CaseStatus } from "../../lib/demo/data";
 import type { SpecTestBlock } from "../../lib/workspace/specBlocks";
 import { formatMs } from "../../lib/format";
@@ -24,6 +24,9 @@ type TreeStep = {
   key: string;
   title: string;
   depth: number;
+  /** Static parse's declaration line — the live heartbeat's current step
+   *  reports the same line, which is how the running step lights up. */
+  line?: number;
   status: RowStatus;
   durationMs?: number;
   error?: string;
@@ -92,6 +95,7 @@ function buildTree(files: { file: string; tests: SpecTestBlock[] }[] | null, cas
             key: `${group.file}:${blockIndex}:${stepIndex}`,
             title: step.title,
             depth: step.depth,
+            line: step.line,
             status: "notrun"
           }))
         };
@@ -190,11 +194,51 @@ function statusClass(status: RowStatus): string {
   return "notrun";
 }
 
-export function CaseTree({ files, cases }: {
+/** Lines of a Playwright failure that carry the actual diagnosis —
+ *  highlight them so the stack noise around them still scans. */
+const DIAGNOSTIC_LINE_RE = /^(Error\b|Locator:|Expected\b|Received\b|Test timeout|Timeout:|Retry:|Call log:)/;
+
+/**
+ * A readable failure block: brighter than the old inherited pre colors
+ * (which rendered dark-on-dark here), a wider excerpt so Locator/Expected/
+ * Received survive the cut, and the diagnostic lines accented.
+ */
+export function CaseError({ text }: { text: string }) {
+  const clipped = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
+  return (
+    <pre className="case-err">
+      {clipped.split("\n").map((line, index) => (
+        <span className={DIAGNOSTIC_LINE_RE.test(line.trimStart()) ? "case-err-label" : undefined} key={index}>
+          {line}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+export function CaseTree({ cases, files, onOpenIssue, running }: {
   /** The static spec parse, when the workspace is readable. null = group
    *  the cases alone (run data only). */
   files?: { file: string; tests: SpecTestBlock[] }[] | null;
   cases: CaseResult[];
+  /** Present when this run has a linked issue: rendered under each failed
+   *  step's error (or a failed test without step errors), so the failure
+   *  and its triage path sit exactly where it happened. */
+  onOpenIssue?: () => void;
+  /** Live heartbeat from the runner: which test (and which test.step line
+   *  inside it) is executing right now. Blocks not yet reached render as
+   *  "Not run"; the running one pulses until its result lands. */
+  running?: {
+    testTitle?: string | null;
+    file?: string;
+    stepLine?: number | null;
+    elapsedMs?: number | null;
+    /** Steps the runner already closed inside the running test (stepEnd wire payload). */
+    finishedSteps?: { title: string; line?: number; durationMs?: number; error?: string | null }[];
+    /** Live count-up for the step executing right now. */
+    stepElapsedMs?: number | null;
+  };
 }) {
   const { t } = useT();
   const tree = useMemo(() => buildTree(files ?? null, cases), [files, cases]);
@@ -208,41 +252,111 @@ export function CaseTree({ files, cases }: {
             <div className="case-file-head">
               <FileCode2 size={13} aria-hidden />
               <span className="mono">{group.file || t("run.cases")}</span>
-              <span className="case-file-counts muted">
-                {passed} {t("status.passed").toLowerCase()} · {failed} {t("status.failed").toLowerCase()}
+              {/* A count that has reached something renders as its colored
+                  badge with the ✓ / ✗ mark; a zero count stays muted text —
+                  an empty group never advertises a state it has not hit. */}
+              <span className="case-file-counts">
+                {passed > 0 ? (
+                  <span className="badge badge-passed">
+                    <CircleCheck size={13} />
+                    {passed} {t("status.passed").toLowerCase()}
+                  </span>
+                ) : (
+                  <span className="muted">{passed} {t("status.passed").toLowerCase()}</span>
+                )}
+                <span className="muted">·</span>
+                {failed > 0 ? (
+                  <span className="badge badge-failed">
+                    <CircleX size={13} />
+                    {failed} {t("status.failed").toLowerCase()}
+                  </span>
+                ) : (
+                  <span className="muted">{failed} {t("status.failed").toLowerCase()}</span>
+                )}
               </span>
             </div>
-            {group.tests.map((test) => (
-              <div className="case-test" key={test.key}>
-                <div
-                  className={`case-row${test.status === "failed" ? " has-error" : ""}`}
-                  title={test.describeChain.length > 0 ? `${test.describeChain.join(" › ")} › ${test.title}` : test.title}
-                >
-                  <span className={`case-dot ${statusClass(test.status)}`} aria-hidden />
-                  <span className="case-title">{test.title}</span>
-                  <span className="case-dur">
-                    {test.status === "notrun" ? t("run.notRun") : formatMs(test.durationMs ?? 0)}
-                  </span>
-                </div>
-                {test.status === "failed" && test.error ? (
-                  <pre className="case-err">{test.error.length > 400 ? `${test.error.slice(0, 400)}…` : test.error}</pre>
-                ) : null}
-                {test.steps.map((step) => (
+            {group.tests.map((test) => {
+              // The runner's current test lights up here — matched by title
+              // and file (same keys the result matcher uses), and only while
+              // no result has landed for it yet (testEnd flips the dot).
+              const testRunning = !!running?.testTitle
+                && test.status === "notrun"
+                && test.title === running.testTitle
+                && (!running.file || running.file === group.file);
+              return (
+                <div className="case-test" key={test.key}>
                   <div
-                    className={`case-row case-step${step.status === "failed" ? " has-error" : ""}`}
-                    key={step.key}
-                    style={{ paddingLeft: 26 + step.depth * 16 }}
-                    title={step.error ?? step.title}
+                    className={`case-row${test.status === "failed" ? " has-error" : ""}${testRunning ? " is-running" : ""}`}
+                    title={test.describeChain.length > 0 ? `${test.describeChain.join(" › ")} › ${test.title}` : test.title}
                   >
-                    <span className={`case-dot sm ${statusClass(step.status)}`} aria-hidden />
-                    <span className="case-title">{step.title}</span>
+                    <span className={`case-dot ${testRunning ? "running" : statusClass(test.status)}`} aria-hidden />
+                    <span className="case-title">{test.title}</span>
                     <span className="case-dur">
-                      {step.status === "notrun" ? t("run.notRun") : formatMs(step.durationMs ?? 0)}
+                      {testRunning
+                        ? running?.elapsedMs != null
+                          ? `${t("run.runningNow")} · ${formatMs(running.elapsedMs)}`
+                          : t("run.runningNow")
+                        : test.status === "notrun" ? t("run.notRun") : formatMs(test.durationMs ?? 0)}
                     </span>
                   </div>
-                ))}
-              </div>
-            ))}
+                  {test.status === "failed" && test.error && !test.steps.some((step) => step.status === "failed" && step.error) ? (
+                    <>
+                      <CaseError text={test.error} />
+                      {onOpenIssue ? (
+                        <button className="link-button case-issue-link" onClick={onOpenIssue} type="button">{t("run.openIssue")}</button>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {test.steps.map((step) => {
+                    const indent = 26 + step.depth * 16;
+                    // A step the runner already closed inside this running
+                    // test shows its real dot/duration/error instantly (the
+                    // stepEnd wire payload) — line is the join key, title
+                    // the fallback when a payload carries no line.
+                    const liveStep = testRunning
+                      ? running?.finishedSteps?.find((s) =>
+                          (s.line != null && s.line === step.line)
+                          || (s.line == null && s.title === step.title))
+                      : undefined;
+                    const stepRunning = !liveStep
+                      && testRunning
+                      && running?.stepLine != null
+                      && step.line === running.stepLine;
+                    const stepError = liveStep?.error ?? step.error;
+                    const stepFailed = step.status === "failed" || !!liveStep?.error;
+                    return (
+                      <div key={step.key}>
+                        <div
+                          className={`case-row case-step${stepFailed ? " has-error" : ""}${stepRunning ? " now-running" : ""}`}
+                          style={{ paddingLeft: indent }}
+                          title={stepError ?? step.title}
+                        >
+                          <span className={`case-dot sm ${stepRunning ? "running" : liveStep ? (liveStep.error ? "failed" : "passed") : statusClass(step.status)}`} aria-hidden />
+                          <span className="case-title">{step.title}</span>
+                          <span className="case-dur">
+                            {stepRunning
+                              ? running?.stepElapsedMs != null
+                                ? `${t("run.runningNow")} · ${formatMs(running.stepElapsedMs)}`
+                                : t("run.runningNow")
+                              : liveStep
+                                ? formatMs(liveStep.durationMs ?? 0)
+                                : step.status === "notrun" ? t("run.notRun") : formatMs(step.durationMs ?? 0)}
+                          </span>
+                        </div>
+                        {stepFailed && stepError ? (
+                          <div style={{ marginLeft: indent }}>
+                            <CaseError text={stepError} />
+                            {onOpenIssue ? (
+                              <button className="link-button case-issue-link" onClick={onOpenIssue} type="button">{t("run.openIssue")}</button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
             {group.tests.length === 0 ? <p className="muted case-file-empty">{t("run.noCases")}</p> : null}
           </div>
         );
