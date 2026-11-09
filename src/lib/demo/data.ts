@@ -8,6 +8,7 @@
 // deterministic without holding thousands of rows.
 
 import type { TranslationKey } from "../i18n/dictionary";
+import { getWorkspaceInfo } from "../../shared/workspaceRegistry";
 
 export type ProjectIcon = "globe" | "cart" | "phone" | "megaphone" | "receipt";
 
@@ -34,6 +35,7 @@ export type Suite = {
 
 export type RunStatus = "passed" | "failed" | "running" | "pending" | "cancelled";
 export type Environment = "production" | "staging" | "sandbox";
+export type RunTrigger = "simulated" | "runner";
 
 export type Run = {
   id: string;
@@ -49,11 +51,31 @@ export type Run = {
   startedAt: number;
   triggeredBy: string;
   browser: "chromium" | "webkit" | "firefox";
+  /** How the run executed. Gateway rows persisted before this field exist
+   *  without it — resolve through runTrigger(), never read directly. */
+  trigger?: RunTrigger;
   /** 0-100, only meaningful while status is "running". */
   progress?: number;
 };
 
+/** Legacy gateway rows carry no trigger: the runner flow always used the
+ *  "run-pw-" id prefix and the "Playwright runner" actor — everything else is
+ *  the simulator. */
+export function runTrigger(run: Run): RunTrigger {
+  if (run.trigger) return run.trigger;
+  return run.id.startsWith("run-pw-") || run.triggeredBy === "Playwright runner" ? "runner" : "simulated";
+}
+
 export type CaseStatus = "passed" | "failed" | "skipped";
+
+/** One test.step block inside a case — the indented blocks under a test in
+ *  the results tree. error present = the step failed. */
+export type CaseStep = {
+  title: string;
+  depth: number;
+  durationMs: number;
+  error?: string;
+};
 
 export type CaseResult = {
   id: string;
@@ -64,6 +86,14 @@ export type CaseResult = {
   /** Present on runner-backed cases (store.runPlaywrightTests); absent on simulated ones. */
   runId?: string;
   order?: number;
+  /** Workspace-relative spec path (runner runs). Lets the results tree
+   *  group cases under their spec file. Optional — persisted gateway rows
+   *  predate it; those re-hydrate from the spec parse instead. */
+  file?: string;
+  /** The test.step blocks recorded for this case (runner runs, in-session).
+   *  Old persisted rows carry none; their steps render from the static spec
+   *  parse without durations. */
+  steps?: CaseStep[];
 };
 
 export type IssueSeverity = "critical" | "high" | "medium" | "low";
@@ -193,6 +223,30 @@ export function suitesForProject(projectId: string): Suite[] {
   return suites.filter((suite) => suite.projectId === projectId && suite.status === "active");
 }
 
+export const PLAYWRIGHT_SUITE_ID_PREFIX = "suite-pw-";
+
+/**
+ * Suites are derived, not stored (Rasta B): a project's "Playwright tests"
+ * suite IS its opened workspace's runnable specs. Returns null when no
+ * workspace with runnable specs is known — callers show the open-folder
+ * empty state instead of invented rows. The id matches ensurePlaywrightSuite
+ * so run ↔ suite linkage keeps working.
+ */
+export function derivedSuiteForProject(projectId: string): Suite | null {
+  const info = getWorkspaceInfo(projectId);
+  if (!info || info.specPaths.length === 0) return null;
+  const count = info.specPaths.length;
+  return {
+    id: `${PLAYWRIGHT_SUITE_ID_PREFIX}${projectId}`,
+    projectId,
+    name: "Playwright tests",
+    description: `${count} runnable spec${count === 1 ? "" : "s"} · ${info.root}`,
+    status: "active",
+    owner: "You",
+    lastUpdatedAt: info.updatedAt
+  };
+}
+
 // Seed generation must not depend on the live catalogs (they are empty until
 // the gateway load completes), so it reads the seed definitions directly.
 function seedSuitesForProject(projectId: string): Suite[] {
@@ -281,6 +335,7 @@ export function buildRunHistory(): Run[] {
         startedAt: status === "pending" ? Date.now() + 25 * 60_000 : startedAt,
         triggeredBy: PEOPLE[Math.floor(random() * PEOPLE.length)]!,
         browser: BROWSERS[Math.floor(random() * BROWSERS.length)]!,
+        trigger: "simulated",
         progress: status === "running" ? 42 : undefined
       });
       sequence++;
@@ -455,16 +510,18 @@ export type Kpis = {
 };
 
 export function completedRuns(runs: Run[]): Run[] {
-  return runs.filter((run) => run.status === "passed" || run.status === "failed");
+  // Truth-only aggregates: Simulated rows (legacy seeds, the removed
+  // simulator) never count toward any number. They still render, badged, in
+  // list surfaces — they just contribute no tests, rates or trends.
+  return runs.filter((run) => runTrigger(run) === "runner" && (run.status === "passed" || run.status === "failed"));
 }
 
 function windowTotals(runs: Run[], from: number, to: number) {
   let total = 0;
   let passed = 0;
   let failed = 0;
-  for (const run of runs) {
+  for (const run of completedRuns(runs)) {
     if (run.startedAt < from || run.startedAt >= to) continue;
-    if (run.status !== "passed" && run.status !== "failed") continue;
     total += run.total;
     passed += run.passed;
     failed += run.failed;
@@ -563,11 +620,13 @@ export function buildProjectStats(runs: Run[], days: number, now = Date.now()): 
 
 export type FailingTest = { name: string; count: number };
 
-export function buildTopFailingTests(runs: Run[], limit = 6): FailingTest[] {
+export function buildTopFailingTests(runs: Run[], caseResults: CaseResult[], limit = 6): FailingTest[] {
   const counts = new Map<string, number>();
   for (const run of completedRuns(runs)) {
     if (run.status !== "failed") continue;
-    const cases = buildRunCases(run);
+    // Only persisted per-case rows count — every runner run persists them,
+    // and there is no other kind of run anymore.
+    const cases = caseResults.filter((entry) => entry.runId === run.id);
     for (const entry of cases) {
       if (entry.status !== "failed") continue;
       counts.set(entry.name, (counts.get(entry.name) ?? 0) + 1);

@@ -2,14 +2,16 @@
 // Debug pane. Base URL (the run configuration) + the primary Run
 // action + the shape of the last run, plus runner liveness.
 
-import { Play, RotateCw } from "lucide-react";
+import { Play, RotateCw, Square } from "lucide-react";
 import { formatMs } from "../../../lib/format";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
 import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
 
-export function RunView({ baseURL, onBaseURLChange, onRun, running, runnableCount, filesCount, runnerOnline, outcome, errorText, runnerUrl }: {
+export function RunView({ baseURL, onBaseURLChange, onCancel, onRun, running, runnableCount, filesCount, runnerOnline, outcome, errorText, runnerUrl }: {
   baseURL: string;
   onBaseURLChange: (value: string) => void;
+  /** Stop the in-flight run — kills the runner's Playwright child. */
+  onCancel: () => void;
   onRun: () => void;
   running: boolean;
   runnableCount: number;
@@ -36,10 +38,21 @@ export function RunView({ baseURL, onBaseURLChange, onRun, running, runnableCoun
             value={baseURL}
           />
         </label>
-        <button className="primary-button wb-run-btn" disabled={running || runnableCount === 0} onClick={onRun} type="button">
-          {running ? <RotateCw size={15} className="wb-spin" /> : <Play size={15} />}
-          {running ? t("tests.running") : t("tests.run")}
-        </button>
+        {running ? (
+          /* While a suite executes the primary action becomes the stop
+             button — a disabled "Running…" label gave the user no way out
+             of a slow (tens-of-minutes) run. */
+          <button className="danger-button wb-run-btn" onClick={onCancel} type="button">
+            <Square size={15} /> {t("run.cancel")}
+          </button>
+        ) : (
+          <button className="primary-button wb-run-btn" disabled={runnableCount === 0} onClick={onRun} type="button">
+            <Play size={15} /> {t("tests.run")}
+          </button>
+        )}
+        {running ? (
+          <p className="wb-run-meta muted"><RotateCw size={13} className="wb-spin" style={{ verticalAlign: -2 }} /> {t("tests.running")}</p>
+        ) : null}
         <p className="wb-run-meta muted">
           {runnableCount} runnable spec{runnableCount === 1 ? "" : "s"} · {filesCount} file{filesCount === 1 ? "" : "s"}
         </p>

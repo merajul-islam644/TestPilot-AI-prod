@@ -32,11 +32,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { runPlaywrightTests } from "../../../lib/demo/store";
+import { runPlaywrightTests, subscribeRunnerProgress, useActiveRunnerRun } from "../../../lib/demo/store";
 import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
 import * as cloud from "../../../lib/blocks/data";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
-import { pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/client";
+import { cancelRunnerRun, pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/client";
+import type { RunnerRunProgress } from "../../../lib/runner/client";
 import { localFolder } from "../../../lib/workspace/localFolder";
 import type { SearchResponse } from "../../../lib/workspace/localFolder";
 import {
@@ -61,6 +62,7 @@ import {
 } from "../../../lib/workspace/importFiles";
 import type { ImportReport } from "../../../lib/workspace/importFiles";
 import type { Project } from "../../../lib/demo/data";
+import { setWorkspaceInfo } from "../../../shared/workspaceRegistry";
 
 export const DEFAULT_BASE_URL = "https://example.com";
 
@@ -92,7 +94,7 @@ function readSavedRoot(projectId: string): SavedRoot | null {
     return null;
   }
 }
-export { readSavedRoot };
+export { readSavedRoot, readSavedSettings };
 
 function writeSavedRoot(projectId: string, saved: SavedRoot | null): void {
   try {
@@ -120,6 +122,30 @@ function writeSavedSettings(projectId: string, baseURL: string): void {
   } catch {
     /* best-effort only */
   }
+}
+
+/** One output line per finished test, from the runner's /status heartbeat —
+ *  shared by the dispatch flow and the reattached-orphan flow so both log
+ *  alike: ✔ passed · ✖ failed · • other, deduped on the completed counter
+ *  so the 2 s poll only logs real change. */
+function createMilestoneLogger(append: (line: string) => void) {
+  let seenCompleted = -1;
+  let seenPassed = 0;
+  let seenFailed = 0;
+  return (progress: RunnerRunProgress): void => {
+    // The heartbeat starts firing the moment the suite boots (completed
+    // still 0) — that is not a milestone, don't log it.
+    if (progress.completed === seenCompleted || progress.completed === 0) return;
+    seenCompleted = progress.completed;
+    const glyph = progress.passed > seenPassed ? "✔" : progress.failed > seenFailed ? "✖" : "•";
+    seenPassed = progress.passed;
+    seenFailed = progress.failed;
+    // total=0 (begin line missed): "[3]" not the broken "[3/0]".
+    const counter = progress.total > 0
+      ? `${progress.completed}/${progress.total}`
+      : `${progress.completed}`;
+    append(`${glyph} [${counter}] ${progress.current ?? ""}`);
+  };
 }
 
 export function useTestWorkspace(project: Project) {
@@ -205,6 +231,11 @@ export function useTestWorkspace(project: Project) {
   /** Old→new path map of the last rename -- the chrome retargets tabs. */
   const [renameMap, setRenameMap] = useState<Record<string, string>>({});
   const [renameTick, setRenameTick] = useState(0);
+  /** Store-level truth about an in-flight runner suite. Survives route
+   *  changes (module state) — this component reattaches to it after a tab
+   *  switch instead of pretending the workspace is idle. */
+  const activeRunnerRun = useActiveRunnerRun();
+  const attachedHere = activeRunnerRun?.projectId === project.id;
 
   // Open the remembered folder (if any) or land on the empty workspace
   // (Lattice's "Open a folder to start editing" state). A folder that
@@ -353,6 +384,19 @@ export function useTestWorkspace(project: Project) {
   /** The SCM baseline of a path — the "original" side of diff editors. */
   const gitContentOf = (path: string) => gitBaselines[path] ?? savedContents[path] ?? "";
   const runnableCount = useMemo(() => paths.filter((path) => isRunnableSpecPath(path)).length, [paths]);
+
+  // Publish the workspace to the shared registry so the suites surfaces and
+  // the New Run modal can derive this project's "Playwright tests" suite
+  // without mounting the workbench. Clearing on a closed root keeps a
+  // removed folder from advertising specs that no longer exist.
+  useEffect(() => {
+    if (!root) {
+      setWorkspaceInfo(project.id, null);
+      return;
+    }
+    const specPaths = paths.filter((path) => isRunnableSpecPath(path));
+    setWorkspaceInfo(project.id, { filesCount: paths.length, root, specPaths, updatedAt: Date.now() });
+  }, [paths, project.id, root]);
 
   /** Append a timestamped line to the panel's Output tab. */
   function appendOutput(line: string): void {
@@ -1094,6 +1138,35 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
+  /** Stop the in-flight runner run — POST /cancel kills the runner's
+   *  Playwright child tree. Works for a run dispatched from this component
+   *  AND for a reattached orphan (dispatched before navigation): the store's
+   *  record flips cancelled either way, and its poll/watch sees the flip. */
+  function cancelRun(): void {
+    if (!running && !attachedHere) return;
+    void cancelRunnerRun().catch(() => undefined);
+  }
+
+  /** Reattach: this component did not dispatch anything (fresh mount after a
+   *  tab switch) but the store says a suite for this project is executing —
+   *  log milestones like a dispatch would so the run stays visible. The
+   *  store's orphan watch (or the dispatch poll) feeds the subscription.
+   *  announceRef keeps the reattach line to ONE per attached period: React
+   *  StrictMode runs effects twice on mount, and a doubled line also broke
+   *  the output list's keys. */
+  const announceRef = useRef(false);
+  useEffect(() => {
+    if (running || !attachedHere) {
+      announceRef.current = false;
+      return;
+    }
+    if (!announceRef.current) {
+      announceRef.current = true;
+      appendOutput("↻ Reattached — a suite is executing on the runner (live)");
+    }
+    return subscribeRunnerProgress(createMilestoneLogger((line) => appendOutput(line)));
+  }, [running, attachedHere]);
+
   async function run(): Promise<void> {
     setErrorText(undefined);
     setOutcome(undefined);
@@ -1147,18 +1220,27 @@ export function useTestWorkspace(project: Project) {
         toast.error(t("tests.noSpecs"));
         return;
       }
-      const helpers = helperPaths.filter((path) => contentNow(path).length > 0);
-      appendOutput(`Dispatched to runner — ${sendable.length} spec(s) + ${helpers.length} helper file(s)`);
+      const helpers = helperPaths.filter((path) => contentNow(path).length > 0 && contentNow(path).length <= RUNNER_FILE_CAP);
+      appendOutput(`Dispatched to runner — ${sendable.length} spec(s) + ${helpers.length} helper file(s) · run values come from the workspace's .env files when present`);
+      // Milestone log: one line per finished test (shared logger, also used
+      // by the reattach path).
+      const onProgress = createMilestoneLogger((line) => appendOutput(line));
       const result = await runPlaywrightTests({
         projectId: project.id,
         baseURL,
-        files: [...sendable, ...helpers].map((path) => ({ name: path, content: contentNow(path) }))
+        root: root ?? undefined,
+        files: [...sendable, ...helpers].map((path) => ({ name: path, content: contentNow(path) })),
+        onProgress
       });
       appendOutput(`✔ Run finished — ${result.run.passed} passed · ${result.run.failed} failed · ${result.run.total} total · ${result.run.durationSec}s`);
       setOutcome(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      appendOutput(`✖ Run failed — ${message}`);
+      // A user cancel is not a failure: the runner answers the cancelled
+      // dispatch with a rejection, and "Run failed" would read as if the
+      // suite misbehaved.
+      if (/cancel/i.test(message)) appendOutput(`■ Run cancelled`);
+      else appendOutput(`✖ Run failed — ${message}`);
       setErrorText(error instanceof Error ? error.message : String(error));
     } finally {
       setRunning(false);
@@ -1181,7 +1263,13 @@ export function useTestWorkspace(project: Project) {
     setBaseURL,
     savedBaseURL,
     saving,
-    running,
+    /** True while a suite executes for this project — dispatched here OR
+     *  reattached from the store (the Run view must offer Cancel either way). */
+    running: running || attachedHere,
+    /** A suite reattached after navigation (not dispatched by this mount) —
+     *  the chrome surfaces the Output panel for it. */
+    reattached: attachedHere && !running,
+    cancelRun,
     importProgress,
     pendingImport,
     runnerOnline,

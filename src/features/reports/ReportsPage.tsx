@@ -15,7 +15,7 @@ import type { SegmentOption } from "../../shared/ui/Segmented";
 type Range = "30" | "60";
 
 export function ReportsPage() {
-  const { runs } = useDemoState();
+  const { runs, caseResults } = useDemoState();
   const { t } = useT();
   const [range, setRange] = useState<Range>("30");
   const days = Number(range);
@@ -24,7 +24,7 @@ export function ReportsPage() {
   const executions = useMemo(() => buildDailyCounts(runs, days), [days, runs]);
   const activity = useMemo(() => buildDailyActivity(runs, days), [days, runs]);
   const projectStats = useMemo(() => buildProjectStats(runs, days).sort((a, b) => b.successRate - a.successRate), [days, runs]);
-  const topFailing = useMemo(() => buildTopFailingTests(runs), [runs]);
+  const topFailing = useMemo(() => buildTopFailingTests(runs, caseResults), [caseResults, runs]);
 
   const rangeOptions: SegmentOption<Range>[] = [
     { id: "30", label: t("reports.range30") },

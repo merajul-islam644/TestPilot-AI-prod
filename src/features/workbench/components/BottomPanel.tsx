@@ -7,11 +7,13 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Eraser, Power, TerminalSquare, X } from "lucide-react";
 import { toast } from "sonner";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
-import { useRoute } from "../../../app/router/routes";
+// From the standalone context module, NOT routes.tsx — importing the
+// route registry here closed a circular import through routes.tsx (which
+// imports every page back) and made vite full-reload on HMR updates.
+import { useRoute } from "../../../app/router/routeContext";
 import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
-import { DataTable } from "../../../shared/ui/DataTable";
+import { CaseTree } from "../../../shared/ui/CaseTree";
 import { Select } from "../../../shared/ui/select";
-import { StatusBadge } from "../../../shared/ui/StatusBadge";
 import { formatMs } from "../../../lib/format";
 import type { PanelTab } from "../state/workbenchStore";
 import { readStoredShell, writeStoredShell, TerminalView, type ShellDescriptor } from "./TerminalView";
@@ -223,8 +225,11 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
               </p>
             ) : (
               <pre className="wb-output-log">
-                {outputLines.map((line) => (
-                  <span className={line.includes("✖") ? "wb-output-line error" : line.includes("✔") ? "wb-output-line ok" : "wb-output-line"} key={line}>
+                {outputLines.map((line, index) => (
+                  // Keyed by position: identical lines are legal output (e.g.
+                  // two repeats of the same log line), and keying by the text
+                  // made React throw duplicate-key errors on every re-render.
+                  <span className={line.includes("✖") ? "wb-output-line error" : line.includes("✔") ? "wb-output-line ok" : "wb-output-line"} key={`${index}:${line}`}>
                     {line}
                     {"\n"}
                   </span>
@@ -240,24 +245,14 @@ export function BottomPanel({ tab, projectId, root, outputLines, onClearOutput, 
               <span className={`wb-results-pill ${outcome.run.failed > 0 ? "fail" : "neutral"}`}>✗ {outcome.run.failed} failed</span>
               <span className="wb-results-pill neutral">{outcome.run.total} total</span>
               <span className="wb-results-pill neutral">{formatMs(outcome.run.durationSec * 1000)}</span>
+              <button className="link-button" onClick={() => navigate(`/runs/${outcome.run.id}`)} type="button">
+                {t("run.openRun")}
+              </button>
             </div>
-            <DataTable
-              columns={[
-                { key: "case", header: t("run.caseColumn"), render: (entry) => <span className="mono">{entry.name}</span> },
-                {
-                  key: "result",
-                  header: t("common.status"),
-                  render: (entry) => (
-                    <StatusBadge tone={entry.status === "failed" ? "failed" : entry.status === "skipped" ? "neutral" : "passed"}>
-                      {t(entry.status === "passed" ? "status.passed" : entry.status === "failed" ? "status.failed" : "status.skipped")}
-                    </StatusBadge>
-                  )
-                },
-                { align: "end", key: "duration", header: t("common.duration"), render: (entry) => formatMs(entry.durationMs) }
-              ]}
-              onRowClick={(entry) => entry.runId && navigate(`/runs/${entry.runId}`)}
-              rows={outcome.cases}
-            />
+            {/* Per-block tree: every spec file with its tests and their
+                test.step blocks, each carrying status + duration from the
+                run. Replaces the old flat case table. */}
+            <CaseTree cases={outcome.cases} />
           </div>
         ) : (
           <p className="wb-output-hint muted">No run yet — results land here after you press Run.</p>

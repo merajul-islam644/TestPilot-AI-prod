@@ -21,6 +21,54 @@ const RUNNER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PLAYWRIGHT_CLI = path.join(RUNNER_ROOT, "node_modules", "@playwright", "test", "cli.js");
 const PORT = Number(process.env.PORT || 9090);
 
+// The in-line progress reporter, materialized into every temp project and
+// wired as a second Playwright reporter. It writes ONE JSON line per
+// lifecycle event to stdout; the spawn block parses those lines live into
+// `activeRun`, and GET /status serves the snapshot to the app while the
+// suite still runs. Written fresh each run (never part of files[]) so a
+// workspace cannot shadow or break it.
+const PROGRESS_REPORTER_SOURCE = `export default class ProgressReporter {
+  completed = 0;
+  passed = 0;
+  failed = 0;
+  skipped = 0;
+  onBegin(_config, suite) {
+    // This Playwright version passes TWO arguments: onBegin(config, suite).
+    // Declaring one left us inspecting the FullConfig — suite.allTests()
+    // threw, Playwright swallowed the reporter error silently, the begin
+    // line (with the run's total) never reached stdout, and the reporter
+    // crash ALSO poisoned the CLI's exit code: an all-passing suite exited
+    // 1. The second argument is the real Suite — count its tree manually
+    // (no allTests() dependency).
+    this.emit({ type: "begin", total: this.countTests(suite) });
+  }
+  countTests(suite) {
+    return (suite.tests?.length ?? 0)
+      + (suite.suites ?? []).reduce((sum, child) => sum + this.countTests(child), 0);
+  }
+  onTestEnd(test, result) {
+    this.completed += 1;
+    if (result.status === "passed") this.passed += 1;
+    else if (result.status === "skipped") this.skipped += 1;
+    else this.failed += 1;
+    this.emit({
+      type: "testEnd",
+      title: test.title,
+      completed: this.completed,
+      passed: this.passed,
+      failed: this.failed,
+      skipped: this.skipped
+    });
+  }
+  onEnd() {
+    this.emit({ type: "end", completed: this.completed, passed: this.passed, failed: this.failed, skipped: this.skipped });
+  }
+  emit(event) {
+    process.stdout.write(JSON.stringify(event) + "\\n");
+  }
+}
+`;
+
 // ---------------------------------------------------------------------------
 // `testpilot-runner://` protocol handler — the "Start server" button.
 // A website can never launch a local program, but Windows CAN on its
@@ -48,10 +96,16 @@ async function registerProtocolHandler() {
   }
 }
 
-const MAX_FILES = 20;
+// A real workspace carries ~10 specs plus every helper they import — 20
+// starved the helper set (support/* never made it into the temp project)
+// and specs failed to load. Keep in sync with RUNNER_MAX_FILES in client.ts.
+const MAX_FILES = 100;
 const MAX_FILE_BYTES = 200_000;
 const MAX_TOTAL_BYTES = 4_000_000;
-const RUN_TIMEOUT_MS = 150_000;
+// Real suites are long: the blocks-data repo runs sequentially (workers 1)
+// at 120 s per test and took ~28 min on the developer's machine. The cap
+// must cover a legitimate full run, not cut it short.
+const RUN_TIMEOUT_MS = 2_700_000;
 
 const ALLOWED_ORIGINS = new Set([
   "https://dbycry.slsblx.com:5173",
@@ -104,8 +158,125 @@ app.use((req, res, next) => {
 
 let activeRuns = 0;
 
+// Live progress of the in-flight run, fed by the progress reporter's JSON
+// lines on the CLI's stdout (see runProgressReporter). null = idle. The app
+// polls GET /status every ~2 s while a run is executing so the UI shows real
+// progress instead of a blind 27-minute wait.
+let activeRun = null;
+// The spawned CLI process — the handle behind POST /cancel. Windows note:
+// killing this parent would orphan Playwright's worker processes, so the
+// cancel path uses `taskkill /T /F` to take down the whole process tree.
+let activeChild = null;
+// Set by POST /cancel; the run block answers "cancelled" instead of a
+// scary 500 "no report" when the child died because of it.
+let cancelRequested = false;
+
+// Finished-run keepsakes: when the dispatching page is gone by the time a
+// suite completes (closed tab, mid-run reload), nobody records the outcome
+// and the record stays "Running" forever. The mapped result is stashed in
+// memory (newest 3) and on disk (newest 5) so the app can reconcile the
+// stale record on its next boot — revive it with the real outcome, or park
+// it cancelled when no result exists.
+const FINISHED_DIR = path.join(RUNNER_ROOT, ".runs", "finished");
+let finishedRuns = [];
+
+function finishedFiles() {
+  return readdir(FINISHED_DIR)
+    .then((names) => names.filter((name) => name.startsWith("run-") && name.endsWith(".json")).sort().reverse())
+    .catch(() => []);
+}
+
+async function rememberFinishedRun(entry) {
+  finishedRuns = [entry, ...finishedRuns.filter((existing) => existing.startedAt !== entry.startedAt)].slice(0, 3);
+  try {
+    await mkdir(FINISHED_DIR, { recursive: true });
+    await writeFile(path.join(FINISHED_DIR, `run-${entry.startedAt}.json`), JSON.stringify(entry), "utf8");
+    for (const stale of (await finishedFiles()).slice(5)) {
+      await unlink(path.join(FINISHED_DIR, stale)).catch(() => {});
+    }
+  } catch {
+    // disk is best-effort; the in-memory copy still serves this process
+  }
+}
+
+async function loadFinishedRuns() {
+  const loaded = [];
+  for (const file of (await finishedFiles()).slice(0, 5)) {
+    try {
+      loaded.push(JSON.parse(await readFile(path.join(FINISHED_DIR, file), "utf8")));
+    } catch {
+      // a torn file (crash mid-write) just drops out of the set
+    }
+  }
+  finishedRuns = loaded.slice(0, 3);
+}
+void loadFinishedRuns();
+
+function applyProgressEvent(event) {
+  if (!activeRun || typeof event !== "object" || event === null) return;
+  if (event.type === "begin" && typeof event.total === "number") {
+    activeRun.total = event.total;
+    activeRun.lastEventAt = Date.now();
+  } else if (event.type === "testEnd") {
+    if (typeof event.passed === "number") activeRun.passed = event.passed;
+    if (typeof event.failed === "number") activeRun.failed = event.failed;
+    if (typeof event.skipped === "number") activeRun.skipped = event.skipped;
+    if (typeof event.completed === "number") activeRun.completed = event.completed;
+    if (typeof event.title === "string" && event.title.length > 0) activeRun.current = event.title;
+    activeRun.lastEventAt = Date.now();
+  } else if (event.type === "end") {
+    if (activeRun.total > 0) activeRun.completed = activeRun.total;
+    activeRun.lastEventAt = Date.now();
+  }
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, runner: "testpilot-runner", version: "0.1.0", busy: activeRuns > 0 });
+});
+
+// Live progress of the in-flight run (null when idle). Read-only and cheap —
+// the SPA polls it while a run is executing.
+app.get("/status", (_req, res) => {
+  const run = activeRun
+    ? {
+        startedAt: activeRun.startedAt,
+        total: activeRun.total,
+        completed: activeRun.completed,
+        passed: activeRun.passed,
+        failed: activeRun.failed,
+        skipped: activeRun.skipped,
+        current: activeRun.current,
+        lastEventAt: activeRun.lastEventAt
+      }
+    : null;
+  res.json({ ok: true, busy: activeRuns > 0, run });
+});
+
+// Finished-run results the app can reconcile against (a dispatch whose page
+// died mid-run leaves a stale "Running" record; this is what revives it).
+app.get("/results", (_req, res) => {
+  res.json({ ok: true, results: finishedRuns });
+});
+
+// Kill the in-flight Playwright run — the app's Cancel button. The tree
+// kill matters: the CLI spawns worker processes, and killing only the
+// parent on Windows would leave them holding browser sessions.
+app.post("/cancel", (_req, res) => {
+  if (!activeChild || activeChild.exitCode !== null) {
+    res.json({ ok: true, cancelled: false });
+    return;
+  }
+  cancelRequested = true;
+  const child = activeChild;
+  const pid = child.pid;
+  res.json({ ok: true, cancelled: true });
+  if (process.platform === "win32" && pid) {
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    });
+  } else {
+    child.kill("SIGKILL");
+  }
 });
 
 app.get("/pair", (_req, res) => {
@@ -1055,42 +1226,136 @@ app.post("/run", async (req, res) => {
   await mkdir(runsRoot, { recursive: true });
   const dir = await mkdtemp(path.join(runsRoot, "run-"));
   try {
-    const baseURL = typeof body.baseURL === "string" && body.baseURL.length > 0 ? body.baseURL : "https://example.com";
-    await writeFile(path.join(dir, "playwright.config.mjs"), buildConfig(baseURL), "utf8");
-    // Write with folder structure preserved, then make native-ESM imports
-    // resolvable: compile TS helpers to sibling .mjs files and rewrite
-    // relative import specifiers to exact paths (see workspace-prepare.mjs).
-    for (const file of files) {
+    // Run configuration follows the workspace's own .env files — the same
+    // values `npm run test` in that folder would dotenv-load. The runner
+    // reads them straight from disk (`.env*` is deliberately excluded from
+    // the file list the app uploads), so secrets never enter app state.
+    // E2E_BASE_URL from .env wins over the request's manual value.
+    const envVars = await readWorkspaceEnvFiles(body.root);
+    const baseURL =
+      envVars.E2E_BASE_URL ??
+      (typeof body.baseURL === "string" && body.baseURL.length > 0 ? body.baseURL : "https://example.com");
+    await writeFile(path.join(dir, "playwright.config.mjs"), buildConfig(baseURL, files.map((file) => file.name)), "utf8");
+    // The workspace's own playwright.config.* and package.json are NOT
+    // materialized: the generated config below must be the only config the
+    // CLI can find (the source repo's config imports `dotenv`, which the
+    // temp project can't resolve — and the CLI's auto-discovery prefers
+    // playwright.config.ts over .mjs, which is exactly how the first
+    // dispatch died with "Cannot find module 'dotenv'"). Filtered BEFORE
+    // anything touches the files — prepareWorkspace compiles every TS
+    // helper in the list and would try to read the excluded config.
+    const materializable = files.filter((file) => {
+      const base = file.name.split("/").pop() ?? "";
+      return file.name !== "package.json" && !/^playwright\.config\./.test(base);
+    });
+    for (const file of materializable) {
       const target = path.join(dir, ...file.name.split("/"));
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.content, "utf8");
     }
-    await prepareWorkspace(dir, files.map((file) => file.name));
+    await prepareWorkspace(dir, materializable.map((file) => file.name));
+    // The temp project sits under the runner root and would inherit its
+    // "type": "module" — under Node ESM resolution a spec's extensionless
+    // helper import ("../../support/test-base") fails outright. Pin CJS so
+    // specs load through Playwright's own pipeline, exactly like in the
+    // source repo (whose package.json has no type field). Explicit .mjs
+    // files (this config, compiled helpers) stay ESM regardless.
+    await writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "commonjs" }), "utf8");
+    // The live progress reporter (see PROGRESS_REPORTER_SOURCE) — a second
+    // Playwright reporter that streams JSON lines to stdout. buildConfig()
+    // references it from both config branches.
+    await writeFile(path.join(dir, "progress-reporter.mjs"), PROGRESS_REPORTER_SOURCE, "utf8");
 
+    // The bundled CLI (node_modules/@playwright/test/cli.js) avoids the
+    // npx/.cmd dance on Windows. Non-zero exit just means failed tests --
+    // the JSON report is still written and parsed below. --config is
+    // explicit so auto-discovery can never pick up a stray workspace
+    // config. No --workers flag: the generated config pins workers 1
+    // (the source repo's sequential shape) and a flag would override it.
+    // spawn (not execFile) so the progress reporter's stdout lines stream
+    // in live and GET /status can answer while the suite still runs.
     let cliError = "";
+    const startedRun = {
+      startedAt: Date.now(),
+      total: 0,
+      completed: 0,
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      current: null,
+      lastEventAt: Date.now()
+    };
+    activeRun = startedRun;
     try {
-      // The bundled CLI (node_modules/@playwright/test/cli.js) avoids the
-      // npx/.cmd dance on Windows. Non-zero exit just means failed tests --
-      // the JSON report is still written and parsed below.
-      await execFileAsync(process.execPath, [PLAYWRIGHT_CLI, "test", "--workers=2"], {
-        cwd: dir,
-        timeout: RUN_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
-        env: { ...process.env, CI: "1" }
+      await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [PLAYWRIGHT_CLI, "test", "--config", "playwright.config.mjs"], {
+          cwd: dir,
+          windowsHide: true,
+          // .env values ride in after the process env: an explicit workspace
+          // .env is the more specific, intended configuration.
+          env: { ...process.env, ...envVars, CI: "1" }
+        });
+        // POST /cancel's kill target; a fresh run clears any stale flag.
+        activeChild = child;
+        cancelRequested = false;
+        const killTimer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("Playwright run timed out"));
+        }, RUN_TIMEOUT_MS);
+        let lineBuffer = "";
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          lineBuffer += chunk;
+          let newline = lineBuffer.indexOf("\n");
+          while (newline >= 0) {
+            const line = lineBuffer.slice(0, newline).trim();
+            lineBuffer = lineBuffer.slice(newline + 1);
+            // Our reporter lines may not START the line: Playwright's own
+            // stdout can end mid-line (dot matrix, spinner frames) without
+            // a trailing newline, gluing our JSON onto it. Find the marker
+            // instead of assuming the line starts with "{".
+            const marker = line.indexOf('{"type"');
+            if (marker >= 0) {
+              try {
+                applyProgressEvent(JSON.parse(line.slice(marker)));
+              } catch {
+                // not a progress line — reporter noise is harmless
+              }
+            }
+            newline = lineBuffer.indexOf("\n");
+          }
+        });
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          cliError = (cliError + chunk).slice(-4000);
+        });
+        child.on("error", reject);
+        child.on("close", (code) => {
+          clearTimeout(killTimer);
+          resolve(code);
+        });
       });
     } catch (error) {
-      cliError = String(error.stderr || error.message || "").slice(-4000);
+      cliError = `${String(error?.message || error)}\n${cliError}`.slice(-4000);
+    } finally {
+      activeRun = null;
+      activeChild = null;
     }
 
     const reportPath = path.join(dir, "report.json");
     const report = existsSync(reportPath) ? JSON.parse(await readFile(reportPath, "utf8")) : null;
     if (!report) {
+      if (cancelRequested) {
+        // The user cancelled the run — say so plainly instead of a scary
+        // 500 "no report". The app parks the record as cancelled either way.
+        res.json({ ok: false, cancelled: true, error: "Run cancelled" });
+        return;
+      }
       res.status(500).json({ ok: false, error: "Playwright produced no report", stderr: cliError });
       return;
     }
 
-    const cases = collectCases(report.suites ?? []);
+    const cases = collectCases(report.suites ?? [], dir);
     if (cases.length === 0 && (report.errors?.length ?? 0) > 0) {
       // Playwright itself failed (bad import, syntax error) -- never answer
       // a silent "0 tests" when we know the suite did not even load.
@@ -1103,8 +1368,15 @@ app.post("/run", async (req, res) => {
       passed: cases.filter((c) => c.status === "passed").length,
       failed: cases.filter((c) => c.status === "failed").length,
       skipped: cases.filter((c) => c.status === "skipped").length,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      // Which target actually ran — .env values override the request's
+      // manual base URL, so echo the effective one back for the UI log.
+      baseURL
     };
+    // The dispatching page may be gone by now (closed tab, mid-run reload) —
+    // its response would land on nobody. Stash the mapped result so the app
+    // can reconcile the stale "Running" record on its next boot.
+    void rememberFinishedRun({ startedAt, finishedAt: Date.now(), summary, cases });
     res.json({ ok: true, name: body.name ?? "Playwright run", summary, cases });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 2000) });
@@ -1114,12 +1386,96 @@ app.post("/run", async (req, res) => {
   }
 });
 
-function buildConfig(baseURL) {
+function buildConfig(baseURL, fileNames = []) {
+  // Mirror the source repo's shape: its suites are sequential (workers 1)
+  // with a 120 s per-test budget and a shared global setup — parallel
+  // execution or short timeouts would break the shared-state assumptions.
+  const hasGlobalSetup = fileNames.some((name) => name === "global-setup.ts" || name.endsWith("/global-setup.ts"));
+  // Every spec's FIRST path segment — the repo layout keeps the whole spec
+  // tree under tests/ (tests/auth/login.spec.ts included), while a flat
+  // workspace scatters specs at the root.
+  const specRoots = [...new Set(
+    fileNames
+      .filter((name) => /\.spec\.[tj]s$/.test(name))
+      .map((name) => (name.includes("/") ? name.split("/")[0] : "."))
+  )];
+
+  // Repo-shaped config: specs under tests/ (the workspace this runner was
+  // built for) get the source repo's project structure — setup / data-setup
+  // / data / data-teardown with the same testMatch, dependency ordering and
+  // conditional storage state. Without the projects block the login, suite
+  // setup and teardown specs interleave alphabetically with the data specs
+  // and the run shape diverges from `npm run test`. No webServer block: the
+  // app under test is already running at the base URL, and no dotenv: env
+  // values arrive via the process environment (read from the workspace's
+  // .env files). retries pinned to 0 — the reference terminal run ran
+  // without CI retries, and a retried suite would report different totals.
+  const repoShaped = specRoots.length === 1 && specRoots[0] === "tests";
+  if (repoShaped) {
+    return `import { defineConfig, devices } from "@playwright/test";
+import fs from "node:fs";
+
+// Generated by the TestPilot runner — mirrors the source repo's
+// playwright.config.ts (projects, dependency order, storage state)
+// without its dotenv/webServer blocks. See server.mjs buildConfig().
+export default defineConfig({
+  testDir: "./tests",
+  fullyParallel: false,
+  retries: 0,
+  workers: 1,
+  timeout: 120000,${hasGlobalSetup ? `\n  globalSetup: "./global-setup.ts",` : ""}
+  use: {
+    baseURL: ${JSON.stringify(baseURL)},
+    trace: "off",
+    screenshot: "only-on-failure",
+    video: "off",
+    ignoreHTTPSErrors: true
+  },
+  projects: [
+    {
+      name: "setup",
+      testMatch: /auth[\\\\/]login\\.spec\\.ts/,
+      use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      name: "data-setup",
+      testMatch: /suite\\.setup\\.spec\\.ts/,
+      use: { ...devices["Desktop Chrome"] }
+    },
+    {
+      name: "data",
+      testMatch: /.*\\.spec\\.ts/,
+      testIgnore: [/auth[\\\\/]login\\.spec\\.ts/, /suite\\.(setup|teardown)\\.spec\\.ts/],
+      dependencies: ["data-setup"],
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 900 },
+        ...(fs.existsSync("fixtures/data-session.json") ? { storageState: "fixtures/data-session.json" } : {})
+      }
+    },
+    {
+      name: "data-teardown",
+      testMatch: /suite\\.teardown\\.spec\\.ts/,
+      dependencies: ["data"],
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 900 },
+        ...(fs.existsSync("fixtures/data-session.json") ? { storageState: "fixtures/data-session.json" } : {})
+      }
+    }
+  ],
+  reporter: [["json", { outputFile: "report.json" }], ["./progress-reporter.mjs"]]
+});
+`;
+  }
+
+  // Flat fallback for workspaces with a different layout: every spec in
+  // the tree runs in one default project.
   return `export default {
   testDir: ".",
-  timeout: 30000,
-  workers: 2,
-  fullyParallel: true,
+  timeout: 120000,
+  fullyParallel: false,
+  workers: 1,${hasGlobalSetup ? `\n  globalSetup: "./global-setup.ts",` : ""}
   use: {
     baseURL: ${JSON.stringify(baseURL)},
     headless: true,
@@ -1127,14 +1483,61 @@ function buildConfig(baseURL) {
     screenshot: "only-on-failure",
     trace: "off"
   },
-  reporter: [["json", { outputFile: "report.json" }]]
+  reporter: [["json", { outputFile: "report.json" }], ["./progress-reporter.mjs"]]
 };
 `;
 }
 
+/** Read and parse every top-level `.env*` file of the workspace root
+ *  (`.env`, `.env.e2e`, …) — dotenv-style KEY=VALUE lines, `#` comments
+ *  skipped, surrounding quotes stripped, `export ` prefixes tolerated.
+ *  Sorted file order with first key wins mirrors dotenv's no-override
+ *  behavior across multiple files. Values stay inside the runner process
+ *  and are only forwarded to the Playwright CLI's environment. */
+async function readWorkspaceEnvFiles(root) {
+  if (typeof root !== "string" || root.length === 0) return {};
+  let entries;
+  try {
+    entries = await readdir(root);
+  } catch {
+    return {}; // root unreadable (folder closed mid-run) — no env values
+  }
+  const parsed = {};
+  const names = entries.filter((entry) => /^\.env(\..+)?$/.test(entry)).sort();
+  for (const name of names) {
+    let content;
+    try {
+      content = await readFile(path.join(root, name), "utf8");
+    } catch {
+      continue;
+    }
+    parseEnvContentInto(parsed, content);
+  }
+  return parsed;
+}
+
+/** Merge one dotenv-shaped string into `parsed` (existing keys kept). */
+function parseEnvContentInto(parsed, content) {
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim().replace(/^export\s+/, "");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in parsed)) parsed[key] = value;
+  }
+}
+
 // Playwright's JSON report nests suites inside suites; flatten every spec's
 // first test result into the shape the app's Run/CaseResult UI already uses.
-function collectCases(suites) {
+// `file` is normalized to the workspace-relative, forward-slash path the app
+// sent in files[].name, so results match the spec tree one to one.
+function collectCases(suites, projectDir) {
   const cases = [];
   for (const suite of suites) {
     for (const spec of suite.specs ?? []) {
@@ -1145,17 +1548,40 @@ function collectCases(suites) {
         result?.error?.message ??
         result?.errors?.map((e) => e.message).filter(Boolean).join("\n") ??
         (status === "passed" ? undefined : "Test failed (no error text reported)");
+      const rawFile = typeof spec.file === "string" ? spec.file : "";
+      const absFile = rawFile ? (path.isAbsolute(rawFile) ? rawFile : path.resolve(projectDir, rawFile)) : "";
+      const relFile = absFile ? path.relative(projectDir, absFile).split(path.sep).join("/") : "";
       cases.push({
         title: spec.title,
-        file: spec.file,
+        file: relFile || undefined,
         status,
         durationMs: Math.round(result?.duration ?? 0),
-        error: error ? String(error).slice(0, 4000) : undefined
+        error: error ? String(error).slice(0, 4000) : undefined,
+        steps: collectSteps(result?.steps)
       });
     }
-    if (suite.suites?.length) cases.push(...collectCases(suite.suites));
+    if (suite.suites?.length) cases.push(...collectCases(suite.suites, projectDir));
   }
   return cases;
+}
+
+// Flatten the report's nested step tree into the app's indented-list shape.
+// Only explicit test.step blocks are kept — Playwright also records every
+// page.goto / fixture as an internal step, which would bury the user's own
+// blocks in noise. A step has no status field in the report: error present
+// means it failed. Nested test.step calls keep their nesting as `depth`.
+function collectSteps(steps, depth = 0, out = []) {
+  for (const step of steps ?? []) {
+    if (step.category && step.category !== "test.step") continue;
+    out.push({
+      title: step.title,
+      depth,
+      durationMs: Math.round(step.duration ?? 0),
+      error: step.error?.message ? String(step.error.message).slice(0, 2000) : undefined
+    });
+    collectSteps(step.steps, depth + 1, out);
+  }
+  return out;
 }
 
 const server = app.listen(PORT, () => {

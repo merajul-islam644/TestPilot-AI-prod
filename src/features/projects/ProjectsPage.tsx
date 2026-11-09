@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
-import { projects, suitesForProject } from "../../lib/demo/data";
+import { derivedSuiteForProject, projects } from "../../lib/demo/data";
 import type { Project } from "../../lib/demo/data";
 import { buildDailyActivity, buildProjectStats } from "../../lib/demo/data";
 import { formatPercent, formatRelative, healthDotClass, healthFromRate } from "../../lib/format";
@@ -11,11 +11,15 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Sparkline } from "../../shared/charts/Sparkline";
+import { useWorkspaceInfos } from "../../shared/workspaceRegistry";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectIcon } from "./ProjectIcon";
 
 export function ProjectsPage() {
   const { runs } = useDemoState();
+  // Subscribes to the workspace registry so each card's suite count tracks
+  // folder open/close (and the app-start bootstrap) without a reload.
+  useWorkspaceInfos();
   const { navigate } = useRoute();
   const { t } = useT();
   const [formOpen, setFormOpen] = useState(false);
@@ -83,7 +87,7 @@ export function ProjectsPage() {
                 <div className="project-card-stats">
                   <span className="project-card-rate">{formatPercent(rate)}</span>
                   <span className="muted">{`${stat?.runs ?? 0} ${t("projects.runsLabel")}`}</span>
-                  <span className="muted">{`${suitesForProject(project.id).length} ${t("projects.suitesLabel")}`}</span>
+                  <span className="muted">{`${derivedSuiteForProject(project.id) ? 1 : 0} ${t("projects.suitesLabel")}`}</span>
                 </div>
                 <div className="project-card-foot">
                   {trend.length >= 2 ? <Sparkline values={trend.slice(-12)} /> : <span />}

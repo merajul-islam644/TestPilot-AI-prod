@@ -125,6 +125,12 @@ export function Workbench({ project }: { project: Project }) {
   useEffect(() => {
     if (ws.errorText) workbenchStore.showPanel("output");
   }, [ws.errorText]);
+  // A suite reattached after navigation: surface the Output so the live
+  // milestones are visible the moment the user is back in the editor —
+  // otherwise the run burns invisibly and the panel still says "Run tests".
+  useEffect(() => {
+    if (ws.reattached) workbenchStore.showPanel("output");
+  }, [ws.reattached]);
 
   // Files that vanished (deleted / replaced) must not leave ghost tabs.
   useEffect(() => {
@@ -274,6 +280,7 @@ export function Workbench({ project }: { project: Project }) {
                 errorText={ws.errorText}
                 filesCount={ws.paths.length}
                 onBaseURLChange={ws.setBaseURL}
+                onCancel={() => ws.cancelRun()}
                 onRun={() => void ws.run()}
                 outcome={ws.outcome}
                 runnableCount={ws.runnableCount}

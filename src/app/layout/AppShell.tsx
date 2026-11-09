@@ -10,9 +10,12 @@ import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { CommandPalette } from "./CommandPalette";
 import { NewRunModal } from "../../features/runs/NewRunModal";
+import { projects } from "../../lib/demo/data";
 import { reloadDomain, useDemoState } from "../../lib/demo/store";
 import { useT } from "../../lib/i18n/LocalizationProvider";
+import { bootstrapWorkspaceInfos, resetWorkspaceBootstrap } from "../../shared/workspaceBootstrap";
 import { PageSkeleton } from "../../shared/ui/PageSkeleton";
+import { RouteErrorBoundary } from "../../shared/ui/ErrorFallback";
 import { useWorkspaceName } from "../../shared/useWorkspaceName";
 
 const COLLAPSED_KEY = "blocks-app:sidebar-collapsed";
@@ -50,6 +53,22 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
     localStorage.setItem(COLLAPSED_KEY, String(collapsedPref));
   }, [collapsedPref]);
 
+  // Suites derive from each project's opened workspace (the per-browser
+  // registry, written by the Tests tab). A browser that never mounted a
+  // Tests tab has no registry row for its remembered folders, so once the
+  // domain catalog is ready, re-derive the runner-mode ones straight from
+  // disk -- suites views and the New Run modal are not blank in fresh
+  // browsers. Reset clears the registry but keeps the saved roots, hence
+  // the re-arm on "loading".
+  useEffect(() => {
+    if (status === "loading") {
+      resetWorkspaceBootstrap();
+      return;
+    }
+    if (status !== "ready") return;
+    void bootstrapWorkspaceInfos(projects.map((project) => project.id));
+  }, [status]);
+
   // The one global shortcut: command palette (⌘K / Ctrl+K).
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -62,7 +81,10 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const shell = useMemo(() => ({ openNewRun: () => setNewRunOpen(true) }), []);
+  const shell = useMemo(() => ({
+    openNewRun: () => setNewRunOpen(true),
+    openProjectTests: (projectId: string) => onNavigate(`/projects/${projectId}?tab=tests`)
+  }), [onNavigate]);
 
   function isActive(href: string): boolean {
     return href === "/" ? activePath === "/" : activePath === href || activePath.startsWith(`${href}/`);
@@ -146,7 +168,12 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
             {status === "loading" ? (
               <PageSkeleton ariaLabel={t("common.loading")} path={activePath} />
             ) : (
-              children
+              /* Crash guard around the routed page. Keyed on the path so a
+                 navigation remounts it -- a crash on one page never poisons
+                 the next. The banner + skeleton above stay outside it. */
+              <RouteErrorBoundary key={activePath} onNavigate={onNavigate}>
+                {children}
+              </RouteErrorBoundary>
             )}
           </main>
         </div>

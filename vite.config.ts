@@ -37,7 +37,14 @@ export default defineConfig(({ mode }) => {
       https,
       port,
       // Keep the port fixed: it's part of the registered OIDC redirect_uri.
-      strictPort: true
+      strictPort: true,
+      watch: {
+        // The runner materializes temp Playwright projects (~80 files per
+        // dispatch) under runner/.runs. Without ignoring them the dev
+        // watcher storms on every Run click. node_modules/.git stay
+        // ignored by default.
+        ignored: ["**/runner/.runs/**"]
+      }
     }
   };
 });

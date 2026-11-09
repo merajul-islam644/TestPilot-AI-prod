@@ -1,18 +1,19 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import * as cloud from "../blocks/data";
-import { cleanCaseError, runSpecsOnRunner } from "../runner/client";
-import { projects, suiteById, suites, type CaseResult, type Environment, type Issue, type IssueStatus, type Project, type ProjectIcon, type Run, type Suite } from "./data";
+import { cleanCaseError, cancelRunnerRun, fetchRunProgress, fetchRunnerResults, runnerBusy, runSpecsOnRunner, type RunnerFinishedRun, type RunnerRunProgress } from "../runner/client";
+import { loadCaseDetail, saveCaseDetail, type CaseDetailEntry } from "../../shared/caseDetailRegistry";
+import { projects, suites, runTrigger, type CaseResult, type Environment, type Issue, type IssueStatus, type Project, type ProjectIcon, type Run, type Suite } from "./data";
 import { translate } from "../i18n/LocalizationProvider";
 import type { TranslationKey } from "../i18n/dictionary";
 
 // Domain store backed by the Blocks Data Gateway. The app-facing shape stays
 // synchronous (useSyncExternalStore) so pages keep reading `runs`/`issues`
 // and the live `projects`/`suites` catalogs exactly as before; behind that
-// facade every load lists the gateway collections, seeds an empty tenant on
-// first run, and every mutation optimistically updates local state and then
-// persists the record fire-and-forget. A failed cloud write never breaks the
-// UI -- the record re-syncs on the next full load.
+// facade every load lists the gateway collections, and every mutation
+// optimistically updates local state and then persists the record
+// fire-and-forget. A failed cloud write never breaks the UI -- the record
+// re-syncs on the next full load.
 
 export type DemoState = {
   status: "loading" | "ready" | "error";
@@ -20,9 +21,14 @@ export type DemoState = {
   issues: Issue[];
   /** Persisted per-case rows from runner-backed runs, grouped by runId on read. */
   caseResults: CaseResult[];
+  /** The runner suite currently executing — set by the dispatching page and,
+   *  after that page dies, by the boot reconcile's live watch. Module-level
+   *  truth: a workbench that (re)mounts mid-run reattaches to it, because
+   *  module state survives route changes that kill component state. */
+  activeRunnerRun: { runId: string; projectId: string } | null;
 };
 
-let state: DemoState = { status: "loading", runs: [], issues: [], caseResults: [] };
+let state: DemoState = { status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null };
 const listeners = new Set<() => void>();
 const timers = new Map<string, number>();
 let runSequence = 1000;
@@ -37,6 +43,27 @@ function emit(next: DemoState) {
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+/** Live progress fan-out: the dispatch poll and the orphan watch both push
+ *  every /status heartbeat here; a mounted workbench subscribes to log
+ *  milestone lines even when it did not dispatch the run itself. */
+const progressListeners = new Set<(progress: RunnerRunProgress) => void>();
+
+export function subscribeRunnerProgress(callback: (progress: RunnerRunProgress) => void): () => void {
+  progressListeners.add(callback);
+  return () => {
+    progressListeners.delete(callback);
+  };
+}
+
+/** Store-side view of the in-flight suite — the workbench reattach reads this. */
+export function useActiveRunnerRun(): { runId: string; projectId: string } | null {
+  return useSyncExternalStore(subscribe, () => state.activeRunnerRun);
+}
+
+function notifyProgressListeners(progress: RunnerRunProgress): void {
+  for (const callback of progressListeners) callback(progress);
 }
 
 /**
@@ -63,13 +90,16 @@ async function refresh(): Promise<void> {
         console.warn("[TestPilot] CaseResult load failed:", error);
         return [] as cloud.StoredCase[];
       });
-      emit({ status: "ready", runs: sortRuns(snapshot.runs), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults) });
+      emit({ status: "ready", runs: sortRuns(dedupeRuns(snapshot.runs)), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
+      // A dispatch whose page died mid-run leaves a stale "Running" record.
+      // Ask the runner what actually happened and repair it (below).
+      void reconcileRunnerRuns();
     } catch (error) {
       // The exact gateway reason (GraphQL errors ride in HTTP 200 bodies and
       // are unpacked by cloud.assertGateway) must reach the console -- an
       // empty UI with zero diagnostics is undebuggable.
       console.error("[TestPilot] Blocks Data load failed:", error);
-      emit({ status: "error", runs: [], issues: [], caseResults: [] });
+      emit({ status: "error", runs: [], issues: [], caseResults: [], activeRunnerRun: null });
     } finally {
       refreshInFlight = undefined;
     }
@@ -88,14 +118,241 @@ function fillCatalog<T>(catalog: T[], next: T[]) {
   catalog.push(...next);
 }
 
+// --- Stale-run reconcile ----------------------------------------------------
+// A run dispatched from a page that then closed (or reloaded mid-run) leaves
+// the record "Running" forever: the suite kept going on the runner, but the
+// response landed on nobody. The runner stashes finished results (memory +
+// .runs/finished/*.json), and this reconcile — fired after every gateway
+// load — repairs each stale record with the evidence it can prove:
+//   • a matching finished result  → revive with the real outcome + case rows
+//   • no result, runner idle      → the run is definitively dead → cancelled
+//   • runner busy with THIS record's suite → watch it live (reattach):
+//     rows keep updating and the editor can show the run again
+//   • runner unreachable or busy with someone else's run → leave it alone
+async function reconcileRunnerRuns(): Promise<void> {
+  const live = state.runs.filter((entry) => entry.status === "running" || entry.status === "pending");
+  if (live.length === 0) return;
+  const results = await fetchRunnerResults();
+  const busy = await runnerBusy();
+  if (busy === null) return; // unreachable — never guess while offline
+  // Mid-suite: one /status read serves every orphan match check below.
+  const liveProgress = busy ? await fetchRunProgress() : null;
+  const consumed = new Set<number>();
+  for (const run of live) {
+    const match = results.find((res) =>
+      !consumed.has(res.startedAt)
+      && res.startedAt >= run.startedAt - 5_000
+      && res.startedAt <= run.startedAt + 300_000
+    );
+    if (match) {
+      consumed.add(match.startedAt);
+      reviveRunFromResult(run, match);
+    } else if (!busy) {
+      parkCancelledRun(run);
+    } else if (
+      !state.activeRunnerRun
+      && liveProgress
+      && liveProgress.startedAt >= run.startedAt - 5_000
+      && liveProgress.startedAt <= run.startedAt + 300_000
+    ) {
+      // The dispatching page is gone but the suite executes: watch it live —
+      // the row keeps breathing and the editor can reattach to the run.
+      watchOrphanRun(run);
+    }
+  }
+}
+
+/** Applies a runner-kept result to a stale record — the same terminal path
+ *  a live finish takes: record patch, case rows (gateway + registry), one
+ *  issue per failure (capped), and the outcome toast. */
+function reviveRunFromResult(run: Run, result: RunnerFinishedRun): void {
+  const cases: CaseResult[] = result.cases.map((entry, index) => ({
+    id: `${run.id}-c${index}`,
+    name: entry.title,
+    status: entry.status,
+    durationMs: entry.durationMs,
+    error: cleanCaseError(entry.error) || undefined,
+    file: entry.file || undefined,
+    steps: entry.steps?.map((step) => ({
+      title: step.title,
+      depth: step.depth,
+      durationMs: step.durationMs,
+      error: step.error ? cleanCaseError(step.error) || undefined : undefined
+    })),
+    runId: run.id,
+    order: index
+  }));
+  const finished: Run = {
+    ...run,
+    status: result.summary.failed > 0 ? "failed" : "passed",
+    total: result.summary.total || cases.length,
+    passed: result.summary.passed,
+    failed: result.summary.failed,
+    progress: undefined,
+    durationSec: Math.max(1, Math.round((result.summary.durationMs || result.finishedAt - result.startedAt) / 1000))
+  };
+  emit({
+    ...state,
+    runs: sortRuns([...state.runs.map((entry) => (entry.id === run.id ? finished : entry))]),
+    caseResults: [...cases, ...state.caseResults]
+  });
+  void cloud.updateRunRecord(finished).catch(() => undefined);
+  persistCaseRows(run.id, run.projectId, cases);
+  for (const failedCase of cases.filter((entry) => entry.status === "failed").slice(0, 5)) {
+    createIssueFromCase(run.projectId, finished, failedCase);
+  }
+  if (result.summary.failed > 0) {
+    toast.error(`${run.name} — ${translate("status.failed")}`, {
+      description: `${result.summary.failed}/${result.summary.total} ${translate("common.failed").toLowerCase()}`
+    });
+  } else {
+    toast.success(`${run.name} — ${translate("status.passed")}`);
+  }
+}
+
+/** Terminal "definitively dead" verdict for a stale record: cancelled with
+ *  the honest wall-clock duration — the same story the row Cancel tells. */
+function parkCancelledRun(run: Run): void {
+  patchRun(run.id, {
+    status: "cancelled",
+    progress: undefined,
+    durationSec: Math.max(1, Math.round((Date.now() - run.startedAt) / 1000))
+  });
+  toast.info(translate("toast.runCancelled"), { description: run.name });
+}
+
+/** Live-watch a suite executing without its dispatching page (the boot
+ *  reconcile matched a stale "Running" record to the runner's in-flight
+ *  progress). Same duties as the dispatch poll: patch the record's live
+ *  totals, stream heartbeats to listeners, and on suite end apply the real
+ *  outcome — revive from the runner's keepsake when the child finished on
+ *  its own, park cancelled when it was killed without one. */
+function watchOrphanRun(run: Run): void {
+  if (state.activeRunnerRun) return; // one watch at a time
+  emit({ ...state, activeRunnerRun: { runId: run.id, projectId: run.projectId } });
+  let finishing = false;
+  const tick = window.setInterval(() => {
+    const current = state.runs.find((entry) => entry.id === run.id);
+    if (!current || (current.status !== "running" && current.status !== "pending")) {
+      // Cancelled elsewhere — the row button already told that story.
+      stopWatch();
+      return;
+    }
+    void fetchRunProgress()
+      .then(async (progress) => {
+        if (!progress) {
+          // The suite left /status — decide its end from the runner's evidence.
+          await finishWatchedRun();
+          return;
+        }
+        notifyProgressListeners(progress);
+        const pct = progress.total > 0
+          ? Math.min(99, Math.round((progress.completed / progress.total) * 100))
+          : undefined;
+        emit({
+          ...state,
+          runs: sortRuns(state.runs.map((entry) => (
+            entry.id === run.id
+              ? { ...entry, total: progress.total, passed: progress.passed, failed: progress.failed, progress: pct }
+              : entry
+          )))
+        });
+      })
+      .catch(() => undefined);
+  }, 2_000);
+
+  function stopWatch(): void {
+    window.clearInterval(tick);
+    if (state.activeRunnerRun?.runId === run.id) emit({ ...state, activeRunnerRun: null });
+  }
+
+  async function finishWatchedRun(): Promise<void> {
+    if (finishing) return;
+    finishing = true;
+    stopWatch();
+    const busy = await runnerBusy();
+    if (busy === null) return; // runner unreachable — the next boot reconcile decides
+    if (busy) return; // another suite took the runner; its own watch/reconcile handles it
+    const current = state.runs.find((entry) => entry.id === run.id);
+    if (!current || (current.status !== "running" && current.status !== "pending")) return;
+    const results = await fetchRunnerResults();
+    const match = results.find((res) =>
+      res.startedAt >= run.startedAt - 5_000
+      && res.startedAt <= run.startedAt + 300_000
+    );
+    if (match) reviveRunFromResult(current, match);
+    else parkCancelledRun(current);
+  }
+}
+
 function sortRuns(runs: Run[]): Run[] {
   return [...runs].sort((a, b) => b.startedAt - a.startedAt);
 }
 
+// The gateway can end up holding two rows for one run id (a create racing a
+// page reload re-fires with the same record). Two rows with one id mean
+// duplicate React keys and two cancel buttons on one run — collapse to one,
+// preferring a terminal record over a stale live twin.
+function dedupeRuns(runs: Run[]): Run[] {
+  const byId = new Map<string, Run>();
+  for (const run of runs) {
+    const existing = byId.get(run.id);
+    if (!existing) {
+      byId.set(run.id, run);
+    } else if ((existing.status === "running" || existing.status === "pending") && run.status !== "running" && run.status !== "pending") {
+      byId.set(run.id, run);
+    }
+  }
+  return [...byId.values()];
+}
+
+// Per-case file + steps: saved locally first (reload-proof on this
+// machine), then offered to the gateway (which keeps them only if its
+// CaseResult schema accepts the columns). Shared by the live terminal
+// path and the boot reconcile.
+function persistCaseRows(runId: string, projectId: string, list: CaseResult[]): void {
+  saveCaseDetail(runId, list);
+  void cloud.createCaseRecords(runId, projectId, list.map((entry) => ({
+    id: entry.id,
+    runId,
+    projectId,
+    name: entry.name,
+    status: entry.status,
+    durationMs: entry.durationMs,
+    error: entry.error ?? "",
+    order: entry.order ?? 0,
+    file: entry.file,
+    steps: entry.steps
+  }))).catch((error) => console.warn("[TestPilot] CaseResult persist failed:", error));
+}
+
 function sortCases(cases: cloud.StoredCase[]): CaseResult[] {
+  // Re-attach each case's file + step results: the gateway may carry them
+  // (stepsJson, when its schema accepted the columns) — otherwise the local
+  // case-detail registry from the machine that ran the tests does. Without
+  // this, every reload rendered executed steps as "Not run".
+  const detailCache = new Map<string, Record<string, CaseDetailEntry> | null>();
   return [...cases]
     .sort((a, b) => (a.runId === b.runId ? a.order - b.order : a.runId.localeCompare(b.runId)))
-    .map((entry) => ({ id: entry.id, name: entry.name, status: entry.status as CaseResult["status"], durationMs: entry.durationMs, error: entry.error || undefined, runId: entry.runId, order: entry.order }));
+    .map((entry) => {
+      let detail = detailCache.get(entry.runId);
+      if (detail === undefined) {
+        detail = loadCaseDetail(entry.runId);
+        detailCache.set(entry.runId, detail);
+      }
+      const hit = detail?.[entry.id];
+      return {
+        id: entry.id,
+        name: entry.name,
+        status: entry.status as CaseResult["status"],
+        durationMs: entry.durationMs,
+        error: entry.error || undefined,
+        runId: entry.runId,
+        order: entry.order,
+        file: entry.file ?? hit?.file,
+        steps: entry.steps ?? hit?.steps
+      };
+    });
 }
 
 // Seed order (ISS-101 first) is the display order every page expects; the
@@ -122,58 +379,15 @@ function clearTimers(runId: string) {
   }
 }
 
-export function startRun(input: { projectId: string; suiteId: string; environment: Environment; name?: string; description?: string }) {
-  const suite = suiteById(input.suiteId);
-  const id = `run-${Date.now()}-${++runSequence}`;
-  const now = Date.now();
-
-  const run: Run = {
-    id,
-    name: input.name?.trim() || `${suite?.name ?? "Test run"} · ${input.environment}`,
-    projectId: input.projectId,
-    suiteId: input.suiteId,
-    environment: input.environment,
-    status: "pending",
-    total: 0,
-    passed: 0,
-    failed: 0,
-    durationSec: 0,
-    startedAt: now,
-    triggeredBy: "You",
-    browser: "chromium"
-  };
-
-  emit({ ...state, runs: sortRuns([run, ...state.runs]) });
-  toast.info(translate("toast.runStarted"), { description: run.name });
-  void cloud.createRunRecord(run).catch(() => undefined);
-
-  // pending -> running -> terminal. The failure roll is deterministic per
-  // run id so a refresh mid-flight cannot change the outcome the viewer
-  // already saw progressing.
-  const queue = window.setTimeout(() => {
-    timers.delete(id);
-    patchRun(id, { status: "running", progress: 0 });
-
-    const tick = window.setInterval(() => {
-      const current = state.runs.find((entry) => entry.id === id);
-      const progress = Math.min(100, (current?.progress ?? 0) + 7 + (hash(id) % 6));
-      if (progress >= 100) {
-        window.clearInterval(tick);
-        timers.delete(`${id}:tick`);
-        finishRun(id);
-      } else {
-        patchRun(id, { progress });
-      }
-    }, 900);
-    timers.set(`${id}:tick`, tick);
-  }, 2_800);
-  timers.set(id, queue);
-}
-
 export function cancelRun(runId: string) {
   const run = state.runs.find((entry) => entry.id === runId);
   if (!run || (run.status !== "running" && run.status !== "pending")) return;
   clearTimers(runId);
+  // A runner-backed live run must also STOP EXECUTING — the record patch
+  // alone used to leave the runner's Playwright child burning CPU for the
+  // rest of the timeout window. The in-flight request then answers
+  // "cancelled", runPlaywrightTests parks the record again (idempotent).
+  if (runTrigger(run) === "runner") void cancelRunnerRun().catch(() => undefined);
   patchRun(runId, {
     status: "cancelled",
     progress: undefined,
@@ -182,7 +396,7 @@ export function cancelRun(runId: string) {
   toast.info(translate("toast.runCancelled"), { description: run.name });
 }
 
-/** Local patch + cloud persistence for the simulated run lifecycle. */
+/** Local patch + cloud persistence for the runner run lifecycle. */
 function patchRun(runId: string, patch: Partial<Run>) {
   const runs = state.runs.map((entry) => (entry.id === runId ? { ...entry, ...patch } : entry));
   emit({ ...state, runs });
@@ -190,37 +404,11 @@ function patchRun(runId: string, patch: Partial<Run>) {
   if (next) void cloud.updateRunRecord(next).catch(() => undefined);
 }
 
-function finishRun(runId: string) {
-  const run = state.runs.find((entry) => entry.id === runId);
-  if (!run) return;
-  // ~85% green, matching the historical distribution.
-  const failed = hash(runId) % 100 < 15 ? 1 + (hash(`${runId}:f`) % Math.max(1, Math.floor(run.total * 0.2))) : 0;
-  const total = 14 + (hash(`${runId}:t`) % 26);
-  patchRun(runId, {
-    status: failed > 0 ? "failed" : "passed",
-    total,
-    passed: total - failed,
-    failed,
-    progress: undefined,
-    durationSec: Math.round(total * (11 + (hash(`${runId}:d`) % 9)))
-  });
-  if (failed > 0) toast.error(`${run.name} — ${translate("status.failed")}`);
-  else toast.success(`${run.name} — ${translate("status.passed")}`);
-}
-
-function hash(text: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return Math.abs(hash >>> 0) % 100000;
-}
-
 // ---------------------------------------------------------------------------
-// Runner-backed Playwright runs (Tests tab). Unlike the simulated lifecycle
-// above, these execute real specs on the runner service; the run row, the
-// per-case rows and one issue per failure all persist to the gateway.
+// Runner-backed Playwright runs (Tests tab and New Run). Every run executes
+// real specs on the runner service; the run row, the per-case rows and one
+// issue per failure all persist to the gateway. The simulated lifecycle that
+// used to live above this block is gone — there is no fake data path left.
 // ---------------------------------------------------------------------------
 const PLAYWRIGHT_SUITE_NAME = "Playwright tests";
 
@@ -251,7 +439,16 @@ async function ensurePlaywrightSuite(projectId: string): Promise<Suite> {
 
 export type PlaywrightRunOutcome = { run: Run; cases: CaseResult[] };
 
-export async function runPlaywrightTests(input: { projectId: string; files: { name: string; content: string }[]; baseURL: string }): Promise<PlaywrightRunOutcome> {
+export async function runPlaywrightTests(input: {
+  projectId: string;
+  files: { name: string; content: string }[];
+  baseURL: string;
+  root?: string;
+  name?: string;
+  environment?: Environment;
+  /** Live runner progress while the suite executes (GET /status, ~2 s cadence). */
+  onProgress?: (progress: RunnerRunProgress) => void;
+}): Promise<PlaywrightRunOutcome> {
   const project = projects.find((entry) => entry.id === input.projectId);
   if (!project) throw new Error("Unknown project");
   const suite = await ensurePlaywrightSuite(input.projectId);
@@ -260,10 +457,10 @@ export async function runPlaywrightTests(input: { projectId: string; files: { na
   const now = Date.now();
   const run: Run = {
     id,
-    name: `Playwright · ${project.name}`,
+    name: input.name?.trim() || `Playwright · ${project.name}`,
     projectId: input.projectId,
     suiteId: suite.id,
-    environment: "staging",
+    environment: input.environment ?? "staging",
     status: "running",
     total: 0,
     passed: 0,
@@ -272,18 +469,51 @@ export async function runPlaywrightTests(input: { projectId: string; files: { na
     startedAt: now,
     triggeredBy: "Playwright runner",
     browser: "chromium",
+    trigger: "runner",
     progress: 0
   };
-  emit({ ...state, runs: sortRuns([run, ...state.runs]) });
+  emit({ ...state, runs: sortRuns([run, ...state.runs]), activeRunnerRun: { runId: id, projectId: input.projectId } });
   void cloud.createRunRecord(run).catch(() => undefined);
   toast.info(translate("toast.runStarted"), { description: run.name });
+
+  // Live progress while the suite runs: poll the runner's /status every 2 s
+  // and patch the LOCAL run record only — the gateway is written at dispatch
+  // and at the terminal state, never per tick (per-tick writes would spam
+  // the collection for a 27-minute run). An unreachable/older runner answers
+  // null and the bar simply keeps its last value.
+  const pollTimer = window.setInterval(() => {
+    void fetchRunProgress()
+      .then((progress) => {
+        if (!progress) return;
+        // total=0 (begin line missed): no denominator for a % — the row
+        // keeps "Running" without one, but the milestones still flow.
+        const pct = progress.total > 0
+          ? Math.min(99, Math.round((progress.completed / progress.total) * 100))
+          : undefined;
+        emit({
+          ...state,
+          runs: sortRuns([
+            { ...run, total: progress.total, passed: progress.passed, failed: progress.failed, progress: pct },
+            ...state.runs.filter((entry) => entry.id !== run.id)
+          ])
+        });
+        input.onProgress?.(progress);
+        notifyProgressListeners(progress);
+      })
+      .catch(() => undefined);
+  }, 2_000);
+  const stopProgressPolling = (): void => window.clearInterval(pollTimer);
+  const persistCases = (list: CaseResult[]): void => persistCaseRows(id, input.projectId, list);
 
   try {
     const result = await runSpecsOnRunner({
       name: run.name,
       baseURL: input.baseURL,
+      root: input.root,
       files: input.files
     });
+    // The response carries the authoritative final numbers — stop polling.
+    stopProgressPolling();
 
     const cases: CaseResult[] = result.cases.map((entry, index) => ({
       id: `${id}-c${index}`,
@@ -291,9 +521,26 @@ export async function runPlaywrightTests(input: { projectId: string; files: { na
       status: entry.status,
       durationMs: entry.durationMs,
       error: cleanCaseError(entry.error) || undefined,
+      file: entry.file || undefined,
+      steps: entry.steps?.map((step) => ({
+        title: step.title,
+        depth: step.depth,
+        durationMs: step.durationMs,
+        error: step.error ? cleanCaseError(step.error) || undefined : undefined
+      })),
       runId: id,
       order: index
     }));
+    // Cancel race: the user already flipped this record to "cancelled"
+    // while the suite kept executing (a slow runner answers whenever it
+    // finishes). A finished result landing afterwards must NOT resurrect
+    // the cancelled record as passed/failed — keep it cancelled, but keep
+    // the cases that did complete so the detail view still shows them.
+    if (state.runs.find((entry) => entry.id === id)?.status === "cancelled") {
+      emit({ ...state, caseResults: [...cases, ...state.caseResults], activeRunnerRun: null });
+      persistCases(cases);
+      return { run: state.runs.find((entry) => entry.id === id)!, cases };
+    }
     const finished: Run = {
       ...run,
       status: result.summary.failed > 0 ? "failed" : "passed",
@@ -306,22 +553,14 @@ export async function runPlaywrightTests(input: { projectId: string; files: { na
     emit({
       ...state,
       runs: sortRuns([finished, ...state.runs.filter((entry) => entry.id !== id)]),
-      caseResults: [...cases, ...state.caseResults]
+      caseResults: [...cases, ...state.caseResults],
+      activeRunnerRun: null
     });
 
     // Persist terminal state, case rows, and one issue per failure (capped so
     // a broken suite cannot flood the issues board).
     void cloud.updateRunRecord(finished).catch(() => undefined);
-    void cloud.createCaseRecords(id, input.projectId, cases.map((entry) => ({
-      id: entry.id,
-      runId: id,
-      projectId: input.projectId,
-      name: entry.name,
-      status: entry.status,
-      durationMs: entry.durationMs,
-      error: entry.error ?? "",
-      order: entry.order ?? 0
-    }))).catch((error) => console.warn("[TestPilot] CaseResult persist failed:", error));
+    persistCases(cases);
     for (const failedCase of cases.filter((entry) => entry.status === "failed").slice(0, 5)) {
       createIssueFromCase(input.projectId, finished, failedCase);
     }
@@ -332,14 +571,21 @@ export async function runPlaywrightTests(input: { projectId: string; files: { na
   } catch (error) {
     // Transport-level failure (runner down / timeout): park the run as
     // cancelled so it does not spin as "running" forever.
+    stopProgressPolling();
+    const userCancelled = state.runs.find((entry) => entry.id === id)?.status === "cancelled";
     patchRun(id, {
       status: "cancelled",
       progress: undefined,
       durationSec: Math.max(1, Math.round((Date.now() - now) / 1000))
     });
-    toast.error(translate("toast.runnerFailed"), {
-      description: error instanceof Error ? error.message.slice(0, 200) : undefined
-    });
+    // A user-initiated cancel already told its story ("Run cancelled" toast
+    // from cancelRun) — don't stack a scary "runner failed" toast on top.
+    if (!userCancelled) {
+      toast.error(translate("toast.runnerFailed"), {
+        description: error instanceof Error ? error.message.slice(0, 200) : undefined
+      });
+    }
+    if (state.activeRunnerRun?.runId === id) emit({ ...state, activeRunnerRun: null });
     throw error;
   }
 }
@@ -443,8 +689,9 @@ export function deleteProject(projectId: string): void {
 }
 
 /**
- * Settings > Danger zone: clear UI prefs, wipe every gateway record and let
- * refresh() reseed the tenant from the deterministic generators.
+ * Settings > Danger zone: clear UI prefs, wipe every gateway record and
+ * reload into the empty state. Nothing is reseeded — the next data in this
+ * environment is whatever the user creates and runs for real.
  */
 export function resetDemoData() {
   for (const timeout of timers.values()) window.clearTimeout(timeout);
@@ -453,7 +700,7 @@ export function resetDemoData() {
   for (const key of [...localStorage.keys()]) {
     if (key.startsWith("testpilot:")) localStorage.removeItem(key);
   }
-  emit({ status: "loading", runs: [], issues: [], caseResults: [] });
+  emit({ status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null });
   toast.info(translate("toast.resetStarted"));
   void (async () => {
     try {

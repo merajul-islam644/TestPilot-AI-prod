@@ -1,11 +1,11 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Square } from "lucide-react";
 import type { Column } from "../../shared/ui/DataTable";
 import type { Run, RunStatus } from "../../lib/demo/data";
-import { projectById } from "../../lib/demo/data";
+import { projectById, runTrigger } from "../../lib/demo/data";
 import { formatDateTime, formatDuration, formatRelative } from "../../lib/format";
 import type { TranslationKey } from "../../lib/i18n/dictionary";
 import { useT } from "../../lib/i18n/LocalizationProvider";
-import { RunStatusBadge } from "../../shared/ui/StatusBadge";
+import { RunStatusBadge, SimulatedBadge } from "../../shared/ui/StatusBadge";
 
 export const RUN_STATUS_KEYS: Record<RunStatus, TranslationKey> = {
   passed: "status.passed",
@@ -16,12 +16,23 @@ export const RUN_STATUS_KEYS: Record<RunStatus, TranslationKey> = {
 };
 
 /** The standard run table row set, shared by Overview, Runs and drill-downs.
- *  `omitProject` drops the Project column inside project-scoped views. */
-export function useRunColumns(onOpen: (run: Run) => void, { omitProject = false }: { omitProject?: boolean } = {}): Column<Run>[] {
+ *  `omitProject` drops the Project column inside project-scoped views.
+ *  `onCancel` arms the last cell with a stop button on live rows (running /
+ *  pending) — pages that shouldn't offer cancellation just leave it out. */
+export function useRunColumns(onOpen: (run: Run) => void, { omitProject = false, onCancel }: { omitProject?: boolean; onCancel?: (run: Run) => void } = {}): Column<Run>[] {
   const { t } = useT();
 
   return [
-    { key: "name", header: t("common.name"), render: (run) => <span className="table-link">{run.name}</span> },
+    {
+      key: "name",
+      header: t("common.name"),
+      render: (run) => (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span className="table-link">{run.name}</span>
+          {runTrigger(run) === "simulated" ? <SimulatedBadge label={t("run.simulated")} title={t("run.simulatedHint")} /> : null}
+        </span>
+      )
+    },
     ...(omitProject ? [] : [{ key: "project", header: t("common.project"), render: (run: Run) => projectById(run.projectId)?.name ?? "—" }]),
     {
       key: "status",
@@ -52,7 +63,25 @@ export function useRunColumns(onOpen: (run: Run) => void, { omitProject = false 
     {
       key: "open",
       header: "",
-      render: () => <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
+      render: (run) =>
+        onCancel && (run.status === "running" || run.status === "pending") ? (
+          <button
+            aria-label={t("run.cancel")}
+            className="tertiary-button"
+            onClick={(event) => {
+              // The row itself navigates — don't follow it when the intent
+              // is to stop the run.
+              event.stopPropagation();
+              onCancel(run);
+            }}
+            style={{ padding: "2px 8px", color: "hsl(var(--destructive))" }}
+            title={t("run.cancel")}
+          >
+            <Square size={13} /> {t("run.cancel")}
+          </button>
+        ) : (
+          <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
+        )
     }
   ];
 }

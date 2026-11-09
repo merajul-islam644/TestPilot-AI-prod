@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Ban, Circle, CircleAlert, CircleCheck, CircleDot, CircleMinus, CircleX, LoaderCircle, OctagonAlert, PencilLine, Archive, TriangleAlert } from "lucide-react";
+import { Archive, Ban, Circle, CircleAlert, CircleCheck, CircleDot, CircleMinus, CircleX, FlaskConical, LoaderCircle, OctagonAlert, PencilLine, TriangleAlert } from "lucide-react";
 import type { IssueSeverity, IssueStatus, RunStatus, SuiteStatus } from "../../lib/demo/data";
 
 type Tone = "passed" | "failed" | "running" | "pending" | "cancelled" | "critical" | "high" | "medium" | "low" | "neutral" | "accent";
@@ -34,6 +34,17 @@ export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNod
 
 export function RunStatusBadge({ status, label }: { status: RunStatus; label: string }) {
   return <StatusBadge tone={status === "pending" ? "neutral" : status}>{label}</StatusBadge>;
+}
+
+/** Marks runs whose numbers came from the built-in simulator, not a real
+ *  Playwright execution. */
+export function SimulatedBadge({ label, title }: { label: string; title?: string }) {
+  return (
+    <span className="badge badge-neutral" title={title}>
+      <FlaskConical size={13} />
+      {label}
+    </span>
+  );
 }
 
 export function IssueStatusBadge({ status, label }: { status: IssueStatus; label: string }) {

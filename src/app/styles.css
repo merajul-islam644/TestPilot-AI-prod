@@ -592,6 +592,12 @@ pre { background: hsl(var(--high-emphasis)); border-radius: var(--radius); color
 .not-found h2 { font-size: 56px; margin: 0; }
 .not-found p { color: hsl(var(--muted-foreground)); margin: 8px 0 20px; }
 
+/* Route-level crash fallback */
+.route-error { align-items: center; color: hsl(var(--muted-foreground)); display: grid; justify-content: center; justify-items: center; min-height: 60vh; text-align: center; }
+.route-error h2 { color: hsl(var(--foreground)); font-size: 22px; margin: 12px 0 0; }
+.route-error p { margin: 8px 0 20px; max-width: 420px; }
+.route-error .actions { display: flex; gap: 10px; }
+
 /* Progress (running tests) */
 .progress-track { background: hsl(var(--secondary)); border-radius: 999px; height: 6px; overflow: hidden; }
 .progress-fill { background: hsl(var(--info)); border-radius: 999px; height: 100%; transition: width 0.3s ease; }
@@ -663,6 +669,29 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .failure-card { border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); padding: 14px 16px; }
 .failure-card-head { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
 .failure-card pre { margin: 0; }
+/* Per-block results tree (CaseTree): spec file → test blocks → test.step
+   blocks, each row carrying a status dot + duration. Used in the workbench
+   Results tab, run detail and suite detail. */
+.case-tree { display: grid; gap: 10px; }
+.case-file { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); overflow: hidden; }
+.case-file-head { align-items: center; background: hsl(var(--secondary) / 0.45); border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); display: flex; font-size: 12.5px; gap: 8px; padding: 8px 12px; }
+.case-file-head .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.case-file-counts { margin-left: auto; white-space: nowrap; }
+.case-file-empty { margin: 0; padding: 10px 12px; }
+.case-test { border-top: 1px solid hsl(var(--border)); }
+.case-test:first-of-type { border-top: 0; }
+.case-row { align-items: center; display: flex; gap: 10px; padding: 7px 12px; }
+.case-dot { border-radius: 999px; flex: none; height: 9px; width: 9px; }
+.case-dot.sm { height: 7px; width: 7px; }
+.case-dot.passed { background: hsl(var(--success)); }
+.case-dot.failed { background: hsl(var(--destructive)); }
+.case-dot.skipped { background: hsl(var(--muted-foreground) / 0.7); }
+.case-dot.notrun { background: transparent; border: 1.5px solid hsl(var(--muted-foreground) / 0.45); }
+.case-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.case-dur { color: hsl(var(--muted-foreground)); flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
+.case-row.has-error .case-title { color: hsl(var(--destructive)); }
+.case-err { background: hsl(var(--destructive) / 0.06); border-top: 1px solid hsl(var(--border)); font-size: 12px; line-height: 1.5; margin: 0; max-height: 110px; overflow: auto; padding: 8px 12px 8px 31px; white-space: pre-wrap; }
+.case-step .case-title { font-size: 13px; }
 .step-list { font-size: 13.5px; line-height: 1.55; margin: 0; padding-left: 20px; }
 .step-list li { margin-bottom: 6px; }
 .step-list li:last-child { margin-bottom: 0; }

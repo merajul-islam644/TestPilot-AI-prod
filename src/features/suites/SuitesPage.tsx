@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useRoute } from "../../app/router/routes";
-import { projectById, projects, suites } from "../../lib/demo/data";
+import { derivedSuiteForProject, projectById, projects } from "../../lib/demo/data";
 import type { Suite, SuiteStatus } from "../../lib/demo/data";
 import { useDemoState } from "../../lib/demo/store";
 import { formatRelative } from "../../lib/format";
@@ -12,6 +12,7 @@ import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
 import { Select } from "../../shared/ui/select";
 import { SuiteStatusBadge } from "../../shared/ui/StatusBadge";
+import { useWorkspaceInfos } from "../../shared/workspaceRegistry";
 
 const SUITE_STATUS_KEYS: Record<SuiteStatus, "suite.active" | "suite.draft" | "suite.archived"> = {
   active: "suite.active",
@@ -23,16 +24,27 @@ export function SuitesPage() {
   const { navigate } = useRoute();
   const { t } = useT();
   // Subscribes to the domain store so this page re-renders once the gateway
-  // load fills the projects/suites catalogs.
+  // load fills the projects catalog.
   useDemoState();
+  // Subscribes to the workspace registry so derived suites appear the
+  // moment a folder opens (and disappear when it closes).
+  useWorkspaceInfos();
   const [statusFilter, setStatusFilter] = useState<SuiteStatus | "all">("all");
   const [projectFilter, setProjectFilter] = useState("");
 
-  const filtered = useMemo(() => suites.filter((suite: Suite) => {
+  // Suites derive from each project's opened workspace (Rasta B) — one
+  // "Playwright tests" suite per project with runnable specs, nothing else.
+  // Computed per render: the projects catalog fills in place, so a memo on
+  // its (unchanging) array reference would miss the gateway load.
+  const derivedSuites: Suite[] = projects
+    .map((project) => derivedSuiteForProject(project.id))
+    .filter((suite): suite is Suite => suite !== null);
+
+  const filtered = useMemo(() => derivedSuites.filter((suite) => {
     if (statusFilter !== "all" && suite.status !== statusFilter) return false;
     if (projectFilter && suite.projectId !== projectFilter) return false;
     return true;
-  }), [projectFilter, statusFilter]);
+  }), [derivedSuites, projectFilter, statusFilter]);
 
   const statusOptions: SegmentOption<SuiteStatus | "all">[] = [
     { id: "all", label: t("common.all") },
@@ -61,7 +73,15 @@ export function SuitesPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState description={t("common.notFound")} title={t("suites.empty")} />
+        derivedSuites.length === 0 ? (
+          <EmptyState
+            action={<button className="secondary-button" onClick={() => navigate("/projects")}>{t("suites.openProjects")}</button>}
+            description={t("suites.noneDerivedDesc")}
+            title={t("suites.noneDerivedTitle")}
+          />
+        ) : (
+          <EmptyState description={t("common.notFound")} title={t("suites.empty")} />
+        )
       ) : (
         <DataTable
           columns={[

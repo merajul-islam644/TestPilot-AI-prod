@@ -5,14 +5,11 @@
 // app record carries its logical id in the `key` field and this module keeps
 // key -> ItemId registries for updates. Timestamps are DateTime fields
 // (ISO strings) -- GraphQL Int is 32-bit, so raw epoch milliseconds would
-// overflow. Simulated runs fabricate their case lists (see ../demo/data.ts);
-// runner-backed runs persist real per-case rows in the CaseResult schema.
+// overflow. Every run is runner-backed: real specs execute on the local
+// runner service and the per-case rows persist in the CaseResult schema.
 import { blocksClient } from "./client";
 import {
-  buildIssues,
-  buildRunHistory,
-  SEED_PROJECTS,
-  SEED_SUITES,
+  type CaseStep,
   type Environment,
   type Issue,
   type IssueEvent,
@@ -160,7 +157,6 @@ const itemIds: Record<SchemaName, Map<string, string>> = {
   UserPreference: new Map()
 };
 
-const SEED_CHUNK = 50;
 const CREATE_BATCH = 5;
 const DELETE_CHUNK = 10;
 // Conservative page size: the SDK defaults to 20 and no documented cap
@@ -308,6 +304,7 @@ function toSuiteRecord(suite: Suite): DataRecord {
 
 function fromRunRecord(record: DataRecord): Run {
   const progress = record.progress;
+  const trigger = asString(record.trigger);
   return {
     id: asString(record.key),
     name: asString(record.name),
@@ -322,11 +319,19 @@ function fromRunRecord(record: DataRecord): Run {
     startedAt: asTimestamp(record.startedAt),
     triggeredBy: asString(record.triggeredBy),
     browser: asString(record.browser, "chromium") as Run["browser"],
+    // Legacy rows predate this field and stay undefined — runTrigger()
+    // infers them from the id prefix / actor.
+    ...(trigger ? { trigger: trigger as Run["trigger"] } : {}),
     progress: typeof progress === "number" && Number.isFinite(progress) ? progress : undefined
   };
 }
 
 function toRunRecord(run: Run): DataRecord {
+  // No `trigger` here on purpose: the pushed Run schema has no such column
+  // and the gateway REJECTS unknown fields outright ("field `trigger` does
+  // not exist on RunInsertInput") — sending it failed every runner-run
+  // create silently, losing the record. runTrigger() reconstructs the
+  // trigger from the id prefix / actor when the row is read back.
   return {
     key: run.id,
     name: run.name,
@@ -470,69 +475,13 @@ async function listDomain(): Promise<DomainSnapshot> {
 }
 
 /**
- * Full load used by the app store: lists all four collections and seeds an
- * empty tenant (first run on a fresh Blocks project) from the deterministic
- * seed generators before listing again.
+ * Full load used by the app store: lists the gateway collections and returns
+ * them as-is. An empty tenant stays empty — the deterministic seed generators
+ * no longer run anywhere (removed with the simulator), so neither a first run
+ * nor "Reset demo data" can fabricate a history.
  */
 export async function loadDomain(): Promise<DomainSnapshot> {
-  let snapshot = await listDomain();
-  if (snapshot.projects.length === 0) {
-    await seedDomain();
-    snapshot = await listDomain();
-  }
-  return snapshot;
-}
-
-// ---------------------------------------------------------------------------
-// Seeding -- one-time population of an empty tenant. Bulk insertMany first,
-// per-record creates as the fallback if the gateway rejects the bulk DSL.
-// ---------------------------------------------------------------------------
-async function seedDomain(): Promise<void> {
-  const runs = buildRunHistory();
-  const issues = buildIssues(runs);
-  await insertMany("Project", SEED_PROJECTS.map(toProjectRecord));
-  await insertMany("Suite", SEED_SUITES.map(toSuiteRecord));
-  await insertMany("Run", runs.map(toRunRecord));
-  await insertMany("Issue", issues.map(toIssueRecord));
-}
-
-async function insertMany(schema: SchemaName, records: DataRecord[]): Promise<void> {
-  const mutation = `insertMany${schema}`;
-  for (let offset = 0; offset < records.length; offset += SEED_CHUNK) {
-    const chunk = records.slice(offset, offset + SEED_CHUNK);
-    try {
-      // BulkActionResponse has no itemId (verified against the live gateway:
-      // it rejected exactly that field); acknowledged + totalImpactedData only.
-      const data = assertGateway(await withTransientAuthRetry(`Bulk insert ${schema}`, () => blocksClient.data.graphql({
-        operationName: mutation,
-        query: `mutation ${mutation}($input: [${schema}InsertInput!]!) { ${mutation}(input: $input) { acknowledged totalImpactedData } }`,
-        variables: { input: chunk }
-      })), `Bulk insert ${schema}`);
-      const result = data[mutation] as { acknowledged?: unknown } | null | undefined;
-      if (!result || result.acknowledged === false) {
-        throw new Error(`${mutation} was not acknowledged`);
-      }
-    } catch (bulkError) {
-      // Unknown bulk DSL or a gateway rejection -- per-record creates are the
-      // documented path and each one is asserted individually, so a payload
-      // the schema rejects surfaces here instead of vanishing. The bulk
-      // rejection itself is logged: a silently-swallowed failure here is
-      // exactly what made the original seeding undebuggable.
-      console.warn(`[TestPilot] Bulk insert ${schema} rejected, falling back to per-record creates:`, bulkError);
-      await createRecords(schema, chunk);
-    }
-  }
-}
-
-async function createRecords(schema: SchemaName, records: DataRecord[]): Promise<void> {
-  for (let offset = 0; offset < records.length; offset += CREATE_BATCH) {
-    // assertGateway must see the RESOLVED response: handed the raw promise it
-    // throws "no data" on the first callback and every create after the first
-    // is silently skipped.
-    await Promise.all(records.slice(offset, offset + CREATE_BATCH).map(async (record) =>
-      assertGateway(await collections[schema].create(record), `Insert ${schema}`)
-    ));
-  }
+  return listDomain();
 }
 
 // ---------------------------------------------------------------------------
@@ -540,10 +489,28 @@ async function createRecords(schema: SchemaName, records: DataRecord[]): Promise
 // never break the UI; the record re-syncs on the next full load. The store
 // still logs the rejection, so the reason stays visible in the console.
 // ---------------------------------------------------------------------------
-async function patchRecord(schema: SchemaName, key: string, record: DataRecord): Promise<void> {
-  const itemId = itemIds[schema].get(key);
+async function patchRecord(schema: SchemaName, key: string, record: DataRecord, createMissing = false): Promise<void> {
+  let itemId = itemIds[schema].get(key);
+  if (!itemId && createMissing) {
+    // The initial create for this logical record was lost (the gateway
+    // answers flaky 401s; the store swallows write errors by design). A
+    // later patch must resurrect the row instead of vanishing into
+    // nothing — an unknown key is created, never silently dropped.
+    await createRecord(schema, record);
+    return;
+  }
   if (!itemId) return;
   assertGateway(await collections[schema].update(itemId, record), `Update ${schema}`);
+}
+
+/** Shared create for a logical record; fills the itemId registry on success. */
+async function createRecord(schema: SchemaName, record: DataRecord): Promise<void> {
+  const data = assertGateway(await collections[schema].create(record), `Insert ${schema}`);
+  const mutation = schema === "Run" ? "insertRun" : schema === "Issue" ? "insertIssue" : schema === "Suite" ? "insertSuite" : schema === "Project" ? "insertProject" : null;
+  if (!mutation) return;
+  const result = (data as DataRecord)[mutation] as { itemId?: unknown } | null | undefined;
+  const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
+  if (itemId) itemIds[schema].set(asString(record.key), itemId);
 }
 
 export async function createRunRecord(run: Run): Promise<void> {
@@ -554,7 +521,9 @@ export async function createRunRecord(run: Run): Promise<void> {
 }
 
 export function updateRunRecord(run: Run): Promise<void> {
-  return patchRecord("Run", run.id, toRunRecord(run));
+  // createMissing: the dispatch-time create is fire-and-forget; a flaky
+  // gateway must not leave a finished run with no record at all.
+  return patchRecord("Run", run.id, toRunRecord(run), true);
 }
 
 export function updateIssueRecord(issue: Issue): Promise<void> {
@@ -879,12 +848,25 @@ export type StoredCase = {
   durationMs: number;
   error: string;
   order: number;
+  /** Workspace-relative spec path — sent when the gateway tolerates it. */
+  file?: string;
+  /** The case's test.step results, JSON-packed into stepsJson the same way
+   *  Issue rows carry historyJson. Absent when the gateway dropped them. */
+  steps?: CaseStep[];
 };
+
+// Whether the gateway accepted the extra per-case columns. Discovered on the
+// first write: the pushed CaseResult schema predates file/stepsJson, and a
+// schema that rejects unknown fields would fail every rich create. One
+// rejection flips this off for the session — plain rows still persist, and
+// the localStorage case-detail registry (shared/caseDetailRegistry.ts) keeps
+// steps alive across reloads instead.
+let caseDetailPersist = true;
 
 export async function createCaseRecords(runId: string, projectId: string, cases: StoredCase[]): Promise<void> {
   for (let offset = 0; offset < cases.length; offset += CREATE_BATCH) {
-    await Promise.all(cases.slice(offset, offset + CREATE_BATCH).map(async (entry) =>
-      assertGateway(await collections.CaseResult.create({
+    await Promise.all(cases.slice(offset, offset + CREATE_BATCH).map(async (entry) => {
+      const base: DataRecord = {
         key: entry.id,
         runId,
         projectId,
@@ -893,24 +875,44 @@ export async function createCaseRecords(runId: string, projectId: string, cases:
         durationMs: entry.durationMs,
         errorMessage: entry.error,
         sortOrder: entry.order
-      }), "Insert CaseResult")
-    ));
+      };
+      if (caseDetailPersist && (entry.file || entry.steps?.length)) {
+        try {
+          await assertGateway(await collections.CaseResult.create({
+            ...base,
+            file: entry.file ?? "",
+            stepsJson: entry.steps?.length ? JSON.stringify(entry.steps) : ""
+          }), "Insert CaseResult");
+          return;
+        } catch {
+          // Schema likely lacks the columns — retry plain so the row itself
+          // still persists, and stop trying for the rest of the session.
+          caseDetailPersist = false;
+        }
+      }
+      await assertGateway(await collections.CaseResult.create(base), "Insert CaseResult");
+    }));
   }
 }
 
 /** Every persisted case row; the store groups them by run for the run pages. */
 export async function listCaseRecords(): Promise<StoredCase[]> {
   const records = await listRecords("CaseResult");
-  return records.map((record, index) => ({
-    id: asString(record.key),
-    runId: asString(record.runId),
-    projectId: asString(record.projectId),
-    name: asString(record.name),
-    status: asString(record.status, "failed"),
-    durationMs: asInt(record.durationMs),
-    error: asString(record.errorMessage),
-    order: asInt(record.sortOrder, index)
-  }));
+  return records.map((record, index) => {
+    const steps = asJson<CaseStep[]>(record.stepsJson, []);
+    return {
+      id: asString(record.key),
+      runId: asString(record.runId),
+      projectId: asString(record.projectId),
+      name: asString(record.name),
+      status: asString(record.status, "failed"),
+      durationMs: asInt(record.durationMs),
+      error: asString(record.errorMessage),
+      order: asInt(record.sortOrder, index),
+      ...(asString(record.file) ? { file: asString(record.file) } : {}),
+      ...(steps.length ? { steps } : {})
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

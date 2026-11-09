@@ -1,5 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ComponentType } from "react";
+import { RouteContext, type RouteParams, type RouteState } from "./routeContext";
+export { useRoute } from "./routeContext";
 import { AppShell } from "../layout/AppShell";
 import { RedirectIfAuthenticated, RequireAuth } from "./guards";
 import { CallbackPage } from "../../features/auth/CallbackPage";
@@ -19,8 +21,6 @@ import { ReportsPage } from "../../features/reports/ReportsPage";
 import { SettingsPage } from "../../features/settings/SettingsPage";
 import { HelpPage } from "../../features/help/HelpPage";
 import { ProfilePage } from "../../features/profile/ProfilePage";
-
-type RouteParams = Record<string, string>;
 
 type RouteDef = { component: ComponentType; params: string[]; segments: string[] };
 
@@ -58,15 +58,6 @@ function matchRoute(pathname: string): { component: ComponentType; params: Route
     if (matched) return { component: route.component, params };
   }
   return undefined;
-}
-
-type RouteState = { navigate: (to: string) => void; params: RouteParams; path: string };
-const RouteContext = createContext<RouteState | undefined>(undefined);
-
-export function useRoute(): RouteState {
-  const context = useContext(RouteContext);
-  if (!context) throw new Error("useRoute must be used within AppRouter");
-  return context;
 }
 
 export function AppRouter() {

@@ -5,7 +5,7 @@ import { useShell } from "../../app/layout/ShellContext";
 import { projects } from "../../lib/demo/data";
 import type { Run, RunStatus } from "../../lib/demo/data";
 import { useT } from "../../lib/i18n/LocalizationProvider";
-import { useDemoState } from "../../lib/demo/store";
+import { cancelRun, useDemoState } from "../../lib/demo/store";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
@@ -22,7 +22,10 @@ export function RunsPage() {
   const [statusFilter, setStatusFilter] = useState<RunStatus | "">("");
   const [query, setQuery] = useState("");
 
-  const runColumns = useRunColumns((run) => navigate(`/runs/${run.id}`));
+  // The list is where in-flight runs are managed: each live row carries a
+  // stop button that cancels the run (and kills the runner's Playwright
+  // child for real).
+  const runColumns = useRunColumns((run) => navigate(`/runs/${run.id}`), { onCancel: (run) => cancelRun(run.id) });
 
   const filtered = useMemo(() => runs.filter((run: Run) => {
     if (projectFilter && run.projectId !== projectFilter) return false;
