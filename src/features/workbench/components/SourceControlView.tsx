@@ -15,6 +15,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ArrowDownToLine,
   Check,
   ChevronDown,
@@ -28,6 +31,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Trash2,
   Undo2,
   X
 } from "lucide-react";
@@ -48,16 +52,21 @@ import {
 import type { CommitInfo, PullReport, PushReport } from "../lib/github";
 import { onScmChange, readScmContext, writeScmContext } from "../lib/scmContext";
 import type { ImportReport } from "../../../lib/workspace/importFiles";
+import { localFolder } from "../../../lib/workspace/localFolder";
+import type { GitStashRow } from "../../../lib/workspace/localFolder";
 import { fileIconElement } from "../icons/fileIcon";
 
 /** Sentinel Select value for the "type a branch name" escape hatch. */
 const TYPE_MANUAL = "__type-manually__";
 
-export function SourceControlView({ dirtyPaths, contentOf, busy, onOpenDiff, onRevert, onSaveAll, onMarkCommitted, onStagePull, onToggleSidebar }: {
+export function SourceControlView({ dirtyPaths, contentOf, busy, root, onOpenDiff, onRevert, onSaveAll, onMarkCommitted, onStagePull, onToggleSidebar }: {
   dirtyPaths: Set<string>;
   contentOf: (path: string) => string;
   /** Saving or importing -- disables the destructive buttons. */
   busy: boolean;
+  /** The workspace folder on disk — when it is a real git clone, the
+   *  local-clone sections (stash, merge conflicts) go live. */
+  root: string | null;
   /** VS Code SCM behaviour: clicking a change opens it as a diff
    *  editor (baseline ↔ current edits), not a plain editor. */
   onOpenDiff: (path: string) => void;
@@ -104,6 +113,93 @@ export function SourceControlView({ dirtyPaths, contentOf, busy, onOpenDiff, onR
   const [openGithub, setOpenGithub] = useState(true);
   const [openHistory, setOpenHistory] = useState(true);
   const [confirmingDiscardAll, setConfirmingDiscardAll] = useState(false);
+
+  // Local-clone git: stash rows + merge-conflict paths, served by the
+  // runner's /api/git against the REAL clone the workspace lives in —
+  // things the GitHub REST API cannot see. An old runner (no endpoint)
+  // or a non-clone folder leaves the sections hidden, never erroring.
+  const [stashes, setStashes] = useState<GitStashRow[]>([]);
+  const [conflicts, setConflicts] = useState<string[]>([]);
+  const [localGitBusy, setLocalGitBusy] = useState(false);
+  const [openStash, setOpenStash] = useState(true);
+  const refreshLocalGit = useCallback(async (currentRoot: string | null) => {
+    if (!currentRoot) {
+      setStashes([]);
+      setConflicts([]);
+      return;
+    }
+    try {
+      const [stashRes, statusRes] = await Promise.all([
+        localFolder.runGit({ root: currentRoot, op: "stash-list" }),
+        localFolder.runGit({ root: currentRoot, op: "status" })
+      ]);
+      setStashes(stashRes.stdout.split("\n").filter(Boolean).map((line) => {
+        const tab = line.indexOf("\t");
+        return { ref: tab > 0 ? line.slice(0, tab) : "", subject: tab > 0 ? line.slice(tab + 1) : line };
+      }).filter((row) => row.ref));
+      // Porcelain XY codes: any unmerged pair means a live merge conflict.
+      const UNMERGED = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+      setConflicts(statusRes.stdout.split("\n").filter((line) => UNMERGED.has(line.slice(0, 2))).map((line) => line.slice(3)));
+    } catch {
+      setStashes([]);
+      setConflicts([]);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshLocalGit(root);
+  }, [root, refreshLocalGit]);
+
+  /** Park every dirty file in the stash (git stash push -- paths) — the
+   *  working tree drops back to HEAD, like VS Code's stash. */
+  const stashAll = useCallback(async () => {
+    const paths = [...dirtyPaths].sort();
+    if (!root || paths.length === 0) return;
+    setLocalGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "stash-push", message: "Workbench stash", paths });
+      if (res.code !== 0) throw new Error(res.stderr.trim() || "git stash push failed");
+      toast.success("Stashed", { description: `${paths.length} file(s) parked — working tree back to HEAD. Reopen tabs to see the clean state.` });
+      await refreshLocalGit(root);
+    } catch (error) {
+      toast.error("Stash failed", { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setLocalGitBusy(false);
+    }
+  }, [dirtyPaths, root, refreshLocalGit]);
+
+  /** Bring a stash back (git stash pop). A conflict keeps the stash and
+   *  surfaces the files in the conflict banner instead of failing silent. */
+  const stashPop = useCallback(async (index: number) => {
+    if (!root) return;
+    setLocalGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "stash-pop", index });
+      if (res.code !== 0) {
+        toast.error("Pop hit conflicts", { description: (res.stderr || res.stdout).trim().slice(0, 200) });
+        await refreshLocalGit(root);
+        return;
+      }
+      toast.success("Stash applied", { description: "Popped back into the working tree. Reopen tabs to see the restored content." });
+      await refreshLocalGit(root);
+    } finally {
+      setLocalGitBusy(false);
+    }
+  }, [root, refreshLocalGit]);
+
+  const stashDrop = useCallback(async (index: number) => {
+    if (!root) return;
+    setLocalGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "stash-drop", index });
+      if (res.code !== 0) throw new Error(res.stderr.trim() || "git stash drop failed");
+      toast.success("Stash dropped");
+      await refreshLocalGit(root);
+    } catch (error) {
+      toast.error("Drop failed", { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setLocalGitBusy(false);
+    }
+  }, [root, refreshLocalGit]);
 
   const repo = parseRepoInput(repoInput);
   const dirty = useMemo(() => [...dirtyPaths].sort(), [dirtyPaths]);
@@ -416,6 +512,79 @@ export function SourceControlView({ dirtyPaths, contentOf, busy, onOpenDiff, onR
             </p>
           ) : null}
         </div>
+
+        {conflicts.length > 0 ? (
+          <section className="wb-scm-section wb-scm-conflicts" role="alert">
+            <div className="wb-scm-heading">
+              <AlertTriangle size={13} />
+              Merge conflicts <span className="wb-scm-count">{conflicts.length}</span>
+            </div>
+            <ul className="wb-scm-list">
+              {conflicts.map((path) => (
+                <li className="wb-scm-row" key={path}>
+                  <button className="wb-scm-file" onClick={() => onOpenDiff(path)} title={`${path} — open diff`} type="button">
+                    <span className="wb-tree-icon">{fileIconElement(path)}</span>
+                    <span className="wb-scm-name">{path}</span>
+                  </button>
+                  <span className="wb-scm-status" title="Conflicted">!</span>
+                </li>
+              ))}
+            </ul>
+            <p className="wb-scm-empty">
+              Resolve the conflict markers in the editor (or <span className="mono">git checkout --ours/--theirs</span> in the terminal), then stage the files. Stash pop conflicts keep the stash until resolved.
+            </p>
+          </section>
+        ) : null}
+
+        {root && (stashes.length > 0 || dirtyPaths.size > 0) ? (
+          <section className="wb-scm-section">
+            <div
+              className="wb-scm-heading wb-scm-collapsible"
+              onClick={() => setOpenStash((v) => !v)}
+              onKeyDown={(event) => {
+                collapsibleKey(event);
+                if (event.key === "Enter" || event.key === " ") setOpenStash((v) => !v);
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              <span className="wb-scm-chev">{openStash ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
+              Stashes <span className="wb-scm-count">{stashes.length}</span>
+              <span className="wb-scm-heading-actions" onClick={(event) => event.stopPropagation()}>
+                <button aria-label="Stash all changes" className="wb-icon-btn" disabled={localGitBusy || busy || dirty.length === 0} onClick={() => void stashAll()} title="Park all changes in the stash (working tree back to HEAD)" type="button">
+                  <Archive size={13} />
+                </button>
+                <button aria-label="Refresh stashes" className="wb-icon-btn" disabled={localGitBusy} onClick={() => void refreshLocalGit(root)} title="Refresh stash list" type="button">
+                  <RefreshCw size={13} />
+                </button>
+              </span>
+            </div>
+            {openStash ? (
+              stashes.length === 0 ? (
+                <p className="wb-scm-empty">No stashes. The stash button parks your uncommitted changes and cleans the tree.</p>
+              ) : (
+                <ul className="wb-scm-list">
+                  {stashes.map((row, index) => (
+                    <li className="wb-scm-row" key={row.ref}>
+                      <span className="wb-scm-file" title={row.subject}>
+                        <span className="wb-tree-icon"><Archive size={13} /></span>
+                        <span className="wb-scm-name">{row.subject}</span>
+                      </span>
+                      <span className="wb-scm-row-actions">
+                        <button aria-label={`Pop ${row.ref}`} className="wb-icon-btn" disabled={localGitBusy || busy} onClick={() => void stashPop(index)} title="Pop this stash back into the working tree" type="button">
+                          <ArchiveRestore size={13} />
+                        </button>
+                        <button aria-label={`Drop ${row.ref}`} className="wb-icon-btn" disabled={localGitBusy} onClick={() => void stashDrop(index)} title="Drop this stash" type="button">
+                          <Trash2 size={13} />
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : null}
+          </section>
+        ) : null}
 
         {stagedPaths.length > 0 ? (
           <section className="wb-scm-section">

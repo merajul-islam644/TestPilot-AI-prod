@@ -1287,6 +1287,20 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
   margin: 6px 0 0;
   overflow-wrap: anywhere;
 }
+/* Merge-conflict banner: the one section that must interrupt the scan —
+   amber accent on the heading, the conflicted files under it. */
+.wb-scm-conflicts {
+  border: 1px solid hsl(var(--warning-fg) / 0.35);
+  border-radius: 6px;
+  padding: 8px;
+}
+.wb-scm-conflicts .wb-scm-heading {
+  align-items: center;
+  color: hsl(var(--warning-fg));
+  display: flex;
+  gap: 6px;
+}
+.wb-scm-conflicts .wb-scm-status { color: hsl(var(--warning-fg)); }
 .wb-scm-result {
   color: hsl(var(--success-fg));
   font-size: 11.5px;

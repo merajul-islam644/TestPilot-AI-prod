@@ -266,6 +266,7 @@ export function Workbench({ project }: { project: Project }) {
                 busy={ws.saving || ws.opening}
                 contentOf={ws.contentOf}
                 dirtyPaths={ws.gitDirtyPaths}
+                root={ws.root}
                 onMarkCommitted={(files) => void ws.markCommitted(files)}
                 onOpenDiff={(path) => workbenchStore.openDiff(path)}
                 onRevert={ws.revertFile}

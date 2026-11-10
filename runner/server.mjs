@@ -1304,6 +1304,77 @@ app.post("/api/workbench/mkdir", async (req, res) => {
   }
 });
 
+// Git ops on the picked workspace folder — the SCM pane's bridge to the
+// REAL git clone the workspace lives in (things the GitHub REST API
+// cannot do: stash, blame, local conflict state). Op-based, not free-form
+// args: the runner builds every git argv itself, so the client can never
+// inject flags or commands. `code` carries git's exit status even when
+// non-zero — a failed stash pop (conflict) is a normal state, not a 500.
+const GIT_OPS = {
+  status: () => ["-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=normal"],
+  "stash-list": () => ["stash", "list", "--format=%gd%x09%gs"],
+  "stash-push": (body, root) => {
+    const args = ["stash", "push"];
+    if (typeof body.message === "string" && body.message.trim()) args.push("-m", body.message.trim().slice(0, 200));
+    const paths = Array.isArray(body.paths) ? body.paths.filter((entry) => typeof entry === "string") : [];
+    for (const entry of paths) {
+      const safe = safeResolveUserFolder(root, entry);
+      if (!safe) return { error: `bad path: ${entry}` };
+      args.push("--", entry);
+    }
+    return { args };
+  },
+  "stash-pop": (body) => {
+    const index = Number(body.index ?? 0);
+    const ref = Number.isInteger(index) && index >= 0 ? `stash@{${index}}` : "stash";
+    return { args: ["stash", "pop", ref] };
+  },
+  "stash-drop": (body) => {
+    const index = Number(body.index ?? 0);
+    if (!(Number.isInteger(index) && index >= 0)) return { error: "index must be a whole number" };
+    return { args: ["stash", "drop", `stash@{${index}}`] };
+  },
+  blame: (body, root) => {
+    const safe = safeResolveUserFolder(root, body.path);
+    if (!safe) return { error: "bad path" };
+    return { args: ["blame", "--porcelain", "--", body.path] };
+  }
+};
+
+app.post("/api/git", async (req, res) => {
+  const { root, op } = req.body ?? {};
+  if (!isPlainRoot(root) || typeof op !== "string" || !GIT_OPS[op]) {
+    res.status(400).json({ error: "root and a known op are required" });
+    return;
+  }
+  const built = GIT_OPS[op](req.body ?? {}, root);
+  if (built.error) {
+    res.status(403).json({ error: built.error });
+    return;
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync("git", built.args, {
+      cwd: root,
+      timeout: 20_000,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true
+    });
+    res.json({ ok: true, op, code: 0, stdout: String(stdout).slice(0, 1_000_000), stderr: String(stderr).slice(0, 20_000) });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      res.status(500).json({ error: "git not found on this machine" });
+      return;
+    }
+    // Non-zero git exit (e.g. stash pop hit a conflict) is a RESULT, not
+    // a server failure — the partial stdout/stderr carry the diagnosis.
+    if (typeof error?.code === "number") {
+      res.json({ ok: true, op, code: error.code, stdout: String(error.stdout ?? "").slice(0, 1_000_000), stderr: String(error.stderr ?? "").slice(0, 20_000) });
+      return;
+    }
+    res.status(500).json({ error: String(error?.message || error).slice(0, 500) });
+  }
+});
+
 // Workspace file paths must stay inside the throwaway project: forward
 // slashes only, no drive letters, no backslashes, no empty/"."/".."
 // segments. Only spec-shaped files get executed (Playwright's default

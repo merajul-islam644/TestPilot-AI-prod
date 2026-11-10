@@ -138,9 +138,33 @@ export const localFolder = {
    *  highlight around the query. */
   async search(opts: { root: string; query: string }): Promise<SearchResponse> {
     return postJson<SearchResponse>("/api/workbench/search", { root: opts.root, query: opts.query });
+  },
+
+  /** One allowlisted git op on the workspace clone (stash, blame,
+   *  status) — the runner builds the argv, the client only names the op.
+   *  Git's non-zero exit arrives as `code`, NOT as a throw, so callers
+   *  branch on it (conflict vs transport error). */
+  async runGit(opts: { root: string } & GitOp): Promise<GitOpResult> {
+    return postJson<GitOpResult>("/api/git", opts);
   }
 };
 
 export type SearchLine = { number: number; text: string };
 export type SearchGroup = { path: string; lines: SearchLine[] };
 export type SearchResponse = { results: SearchGroup[]; truncated: boolean; exists?: boolean };
+
+/** One `git stash list` row: the ref (stash@{0}), its subject line. */
+export type GitStashRow = { ref: string; subject: string };
+
+/** Result of one allowlisted git op on the workspace clone. `code` is
+ *  git's OWN exit status — non-zero (e.g. a conflicted stash pop) is a
+ *  normal answer, not a throw; stdout/stderr carry the diagnosis. */
+export type GitOpResult = { ok: true; op: string; code: number; stdout: string; stderr: string };
+
+export type GitOp =
+  | { op: "status" }
+  | { op: "stash-list" }
+  | { op: "stash-push"; message?: string; paths?: string[] }
+  | { op: "stash-pop"; index?: number }
+  | { op: "stash-drop"; index: number }
+  | { op: "blame"; path: string };

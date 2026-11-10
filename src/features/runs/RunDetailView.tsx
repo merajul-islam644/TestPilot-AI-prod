@@ -212,8 +212,12 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
       <div className="grid">
         <div className="metric"><span>{t("common.tests")}</span><strong className="num">{run.total > 0 ? run.total : "…"}</strong></div>
         <div className="metric"><span>{t("common.passed")}</span><strong className="num" style={{ color: "hsl(var(--success))" }}>{terminal || run.status === "running" ? run.passed : "…"}</strong></div>
-        <div className="metric"><span>{t("common.failed")}</span><strong className="num" style={{ color: "hsl(var(--destructive))" }}>{terminal ? run.failed : "…"}</strong></div>
-        <div className="metric"><span>{t("common.duration")}</span><strong>{run.durationSec > 0 ? formatDuration(run.durationSec) : "…"}</strong></div>
+        {/* Failed and Duration used to sit on "…" for the WHOLE run even
+            though the heartbeat knew both — the failed counter rides every
+            testEnd and the elapsed clock ticks off the run's startedAt, so
+            both stream live now, then hand over to the final record. */}
+        <div className="metric"><span>{t("common.failed")}</span><strong className="num" style={{ color: "hsl(var(--destructive))" }}>{terminal ? run.failed : liveNow ? liveNow.failed : "…"}</strong></div>
+        <div className="metric"><span>{t("common.duration")}</span><strong>{run.durationSec > 0 ? formatDuration(run.durationSec) : liveNow ? formatDuration(Math.round((nowTick - liveNow.startedAt) / 1000)) : "…"}</strong></div>
       </div>
 
       <div className="panel" style={{ marginBottom: 14 }}>
