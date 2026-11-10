@@ -24,8 +24,8 @@
   --muted-foreground: 219 12% 47%;  /* #697386 secondary text */
   --low-emphasis: 218 12% 62%;      /* #929BAA muted text */
   --border: 210 22% 92%;            /* #E6E9EF */
-  --primary: 243 100% 68%;          /* #635BFF accent */
-  --primary-strong: 243 76% 56%;    /* hover step for accent fills */
+  --primary: 211 66% 53%;           /* #3985D6 accent — matches the run-progress blue */
+  --primary-strong: 211 72% 45%;    /* hover step for accent fills */
   --primary-foreground: 0 0% 100%;
   --accent: 210 24% 95%;
   --accent-foreground: 222 18% 11%;
@@ -51,12 +51,12 @@
   --chart-failed: #e05252;          /* marks >=3:1 on white */
   --chart-context: #aab3c2;         /* recessive context; relief: tooltip + table view */
   --chart-line-ok: #16a36a;         /* lone status line */
-  --chart-nominal: #635bff;         /* accent, nominal bars */
+  --chart-nominal: #3985d6;         /* accent, nominal bars */
   --chart-grid: #e6e9ef;
   --chart-axis: #c9cfda;
 
-  --avatar-surface: #e3e0ff;
-  --avatar-text: #3f38a8;
+  --avatar-surface: #dbeafe;
+  --avatar-text: #1e40af;
   --radius: 8px;                    /* controls */
   --radius-card: 12px;              /* cards, panels */
   --shadow-card: 0 1px 2px rgba(23, 26, 33, 0.04);
@@ -74,9 +74,9 @@
   --muted-foreground: 219 14% 68%;  /* #A1A9B7 */
   --low-emphasis: 217 10% 50%;      /* #737D8D */
   --border: 220 15% 20%;            /* #2B303A */
-  --primary: 243 100% 74%;          /* #817AFF */
-  --primary-strong: 243 100% 80%;
-  --primary-foreground: 243 60% 10%;
+  --primary: 210 73% 66%;           /* #69A8E8 */
+  --primary-strong: 210 80% 74%;
+  --primary-foreground: 210 60% 10%;
   --accent: 221 18% 14%;
   --accent-foreground: 210 30% 96%;
   --destructive: 0 81% 69%;         /* #F07171 */
@@ -99,12 +99,12 @@
   --chart-failed: #e06666;
   --chart-context: #5a6478;
   --chart-line-ok: #36c58a;
-  --chart-nominal: #817aff;
+  --chart-nominal: #69a8e8;
   --chart-grid: #262b35;
   --chart-axis: #3a4150;
 
-  --avatar-surface: #3f38a8;
-  --avatar-text: #e3e0ff;
+  --avatar-surface: #1e40af;
+  --avatar-text: #dbeafe;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
@@ -122,9 +122,9 @@
     --muted-foreground: 219 14% 68%;
     --low-emphasis: 217 10% 50%;
     --border: 220 15% 20%;
-    --primary: 243 100% 74%;
-    --primary-strong: 243 100% 80%;
-    --primary-foreground: 243 60% 10%;
+    --primary: 210 73% 66%;
+    --primary-strong: 210 80% 74%;
+    --primary-foreground: 210 60% 10%;
     --accent: 221 18% 14%;
     --accent-foreground: 210 30% 96%;
     --destructive: 0 81% 69%;
@@ -145,11 +145,11 @@
     --chart-failed: #e06666;
     --chart-context: #5a6478;
     --chart-line-ok: #36c58a;
-    --chart-nominal: #817aff;
+    --chart-nominal: #69a8e8;
     --chart-grid: #262b35;
     --chart-axis: #3a4150;
-    --avatar-surface: #3f38a8;
-    --avatar-text: #e3e0ff;
+    --avatar-surface: #1e40af;
+    --avatar-text: #dbeafe;
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24);
     --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
   }
@@ -700,22 +700,58 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .case-test { border-top: 1px solid hsl(var(--border)); }
 .case-test:first-of-type { border-top: 0; }
 .case-row { align-items: center; display: flex; gap: 10px; padding: 7px 12px; }
-.case-dot { border-radius: 999px; flex: none; height: 9px; width: 9px; }
+.case-dot { border-radius: 999px; flex: none; height: 9px; position: relative; width: 9px; }
 .case-dot.sm { height: 7px; width: 7px; }
 .case-dot.passed { background: hsl(var(--success)); }
 .case-dot.failed { background: hsl(var(--destructive)); }
 .case-dot.skipped { background: hsl(var(--muted-foreground) / 0.7); }
 .case-dot.notrun { background: transparent; border: 1.5px solid hsl(var(--muted-foreground) / 0.45); }
 .case-dot.running { animation: casePulse 1.2s ease-in-out infinite; background: hsl(var(--primary)); }
+/* Radar ping: a ring breathes out of the dot every cycle — "this exact row
+   is executing" reads from across the room, not just up close. */
+.case-dot.running::after {
+  animation: casePing 1.8s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+  border: 2px solid hsl(var(--primary));
+  border-radius: 999px;
+  content: "";
+  inset: -3px;
+  position: absolute;
+}
 /* Passed/failed rows carry a ✓ / ✗ mark instead of a bare dot — the state
    reads without color and matches the file-head count badges. */
 .case-ico { flex: none; }
 .case-ico.passed { color: hsl(var(--success)); }
 .case-ico.failed { color: hsl(var(--destructive)); }
-.case-row.is-running { background: hsl(var(--primary) / 0.06); }
+.case-row.is-running, .case-row.now-running {
+  background: hsl(var(--primary) / 0.05);
+  overflow: hidden;
+  position: relative;
+}
+/* A soft band sweeps the row left→right while it runs — motion draws the
+   eye to the executing block among ~100 not-run rows. */
+.case-row.is-running::before, .case-row.now-running::before {
+  animation: caseSweep 2.4s ease-in-out infinite;
+  background: linear-gradient(100deg, transparent 20%, hsl(var(--primary) / 0.10) 50%, transparent 80%);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-100%);
+}
 .case-row.is-running .case-title { color: hsl(var(--primary)); }
 .case-row.now-running .case-title { color: hsl(var(--primary)); font-weight: 600; }
 @keyframes casePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes casePing {
+  0% { opacity: 0.9; transform: scale(0.6); }
+  70%, 100% { opacity: 0; transform: scale(2.1); }
+}
+@keyframes caseSweep { to { transform: translateX(100%); } }
+/* The live indicators are decorative — a reduced-motion user still gets the
+   tint + colored title, just without the looping movement. */
+@media (prefers-reduced-motion: reduce) {
+  .case-dot.running, .case-dot.running::after,
+  .case-row.is-running::before, .case-row.now-running::before { animation: none; }
+}
 .case-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case-dur { color: hsl(var(--muted-foreground)); flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
 .case-row.has-error .case-title { color: hsl(var(--destructive)); }

@@ -53,7 +53,14 @@ export function useRunColumns(onOpen: (run: Run) => void, { omitProject = false,
       align: "end",
       key: "duration",
       header: t("common.duration"),
-      render: (run) => (run.durationSec > 0 ? formatDuration(run.durationSec) : "…")
+      render: (run) => {
+        if (run.durationSec > 0) return formatDuration(run.durationSec);
+        // A live row has no stored duration yet — count up from its start.
+        // The ~2s progress emits re-render the row while the suite runs,
+        // so this ticks in every list that shows it.
+        if (run.status === "running") return formatDuration(Math.max(0, Math.round((Date.now() - run.startedAt) / 1000)));
+        return "…";
+      }
     },
     {
       key: "date",
