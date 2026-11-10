@@ -6,6 +6,7 @@ import { loadCaseDetail, saveCaseDetail, type CaseDetailEntry } from "../../shar
 import { projects, suites, runTrigger, type CaseResult, type Environment, type Issue, type IssueStatus, type Project, type ProjectIcon, type Run, type Suite } from "./data";
 import { translate } from "../i18n/LocalizationProvider";
 import type { TranslationKey } from "../i18n/dictionary";
+import { setWorkspaceInfo } from "../../shared/workspaceRegistry";
 
 // Domain store backed by the Blocks Data Gateway. The app-facing shape stays
 // synchronous (useSyncExternalStore) so pages keep reading `runs`/`issues`
@@ -77,6 +78,19 @@ function notifyProgressListeners(progress: RunnerRunProgress): void {
   for (const callback of progressListeners) callback(progress);
 }
 
+/** Cloud writes are what make data visible from every browser, so a failed
+ *  write must be seen, not swallowed — silence is how runs and suites went
+ *  missing cross-browser. Console for every caller; toast because the user
+ *  just did the action whose result is not saved. */
+function warnCloudWriteFailure(what: string): (error: unknown) => void {
+  return (error) => {
+    console.warn(`[TestPilot] ${what} failed:`, error);
+    toast.error(`${what} could not be saved`, {
+      description: (error instanceof Error ? error.message : String(error)).slice(0, 200)
+    });
+  };
+}
+
 /**
  * First call kicks off the gateway load (idempotent and guarded, so the
  * StrictMode double render and multi-page mounts share one request).
@@ -109,9 +123,20 @@ async function refresh(): Promise<void> {
         return projectName && run.name === `Playwright · ${projectName}` ? { ...run, name: projectName } : run;
       });
       emit({ status: "ready", runs: sortRuns(dedupeRuns(runs)), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
+      // Cross-browser suite heal: the "Playwright tests" catalog row is what
+      // makes Test Suites visible from a browser that never opened the
+      // folder (derivedSuiteForProject falls back to it). Rows were lost to
+      // silently-swallowed insert failures and project deletions, so every
+      // project in the catalog gets its row re-created on boot — idempotent
+      // (ensurePlaywrightSuite skips projects that already have one) and
+      // gateway-backed, so no browser is special.
+      for (const project of projects) void ensurePlaywrightSuite(project.id);
       // A dispatch whose page died mid-run leaves a stale "Running" record.
       // Ask the runner what actually happened and repair it (below).
       void reconcileRunnerRuns();
+      // A page that stays OPEN must also see runs dispatched from ANOTHER
+      // browser — the boot reconcile above only fires once per load.
+      startRemoteRunAdoption();
     } catch (error) {
       // The exact gateway reason (GraphQL errors ride in HTTP 200 bodies and
       // are unpacked by cloud.assertGateway) must reach the console -- an
@@ -214,7 +239,7 @@ function reviveRunFromResult(run: Run, result: RunnerFinishedRun): void {
     runs: sortRuns([...state.runs.map((entry) => (entry.id === run.id ? finished : entry))]),
     caseResults: [...cases, ...state.caseResults]
   });
-  void cloud.updateRunRecord(finished).catch(() => undefined);
+  void cloud.updateRunRecord(finished).catch(warnCloudWriteFailure("Run result"));
   persistCaseRows(run.id, run.projectId, cases);
   for (const failedCase of cases.filter((entry) => entry.status === "failed").slice(0, 5)) {
     createIssueFromCase(run.projectId, finished, failedCase);
@@ -228,10 +253,58 @@ function reviveRunFromResult(run: Run, result: RunnerFinishedRun): void {
   }
 }
 
+// --- Cross-browser live adoption --------------------------------------------
+// The boot reconcile catches a run dispatched while this page was closed, but
+// a page SITTING OPEN learned nothing when a run started in another browser:
+// the gateway row lands after this page's load and nothing re-checks. While
+// this page has no live run of its own, a quiet 5 s probe watches for one —
+// runner busy + a matching gateway "Running" record → adopt it through the
+// same watchOrphanRun path. Runner idle or unreachable → the probe is two
+// skipped checks and zero gateway traffic.
+const REMOTE_ADOPTION_POLL_MS = 5_000;
+let remoteAdoptionTimer: number | null = null;
+
+function matchesLiveRunnerRun(run: Run, progress: RunnerRunProgress): boolean {
+  return (run.status === "running" || run.status === "pending")
+    && progress.startedAt >= run.startedAt - 5_000
+    && progress.startedAt <= run.startedAt + 300_000;
+}
+
+async function adoptRemoteRun(): Promise<void> {
+  if (state.activeRunnerRun || state.status !== "ready") return;
+  const busy = await runnerBusy();
+  if (!busy || state.activeRunnerRun) return; // idle, unreachable, or a local run started meanwhile
+  const progress = await fetchRunProgress();
+  if (!progress || state.activeRunnerRun) return;
+  const localMatch = state.runs.find((run) => matchesLiveRunnerRun(run, progress));
+  if (localMatch) {
+    watchOrphanRun(localMatch);
+    return;
+  }
+  // No row in this page's catalog — it was dispatched after our load. One
+  // focused runs refresh, then re-check before adopting.
+  try {
+    const runs = await cloud.listRunRecords();
+    if (state.activeRunnerRun) return;
+    emit({ ...state, runs: sortRuns(dedupeRuns(runs)) });
+  } catch (error) {
+    console.warn("[TestPilot] Runs refresh for adoption failed:", error);
+    return;
+  }
+  const rematch = state.runs.find((run) => matchesLiveRunnerRun(run, progress));
+  if (rematch && !state.activeRunnerRun) watchOrphanRun(rematch);
+}
+
+function startRemoteRunAdoption(): void {
+  if (remoteAdoptionTimer !== null) return;
+  remoteAdoptionTimer = window.setInterval(() => {
+    void adoptRemoteRun();
+  }, REMOTE_ADOPTION_POLL_MS);
+}
+
 /** Terminal "definitively dead" verdict for a stale record: cancelled with
  *  the honest wall-clock duration — the same story the row Cancel tells. */
-function parkCancelledRun(run: Run): void {
-  patchRun(run.id, {
+function parkCancelledRun(run: Run): void {  patchRun(run.id, {
     status: "cancelled",
     progress: undefined,
     durationSec: Math.max(1, Math.round((Date.now() - run.startedAt) / 1000))
@@ -419,7 +492,9 @@ function patchRun(runId: string, patch: Partial<Run>) {
   const runs = state.runs.map((entry) => (entry.id === runId ? { ...entry, ...patch } : entry));
   emit({ ...state, runs });
   const next = runs.find((entry) => entry.id === runId);
-  if (next) void cloud.updateRunRecord(next).catch(() => undefined);
+  // Background lifecycle repair — console only; no toast for a patch the
+  // user did not directly trigger.
+  if (next) void cloud.updateRunRecord(next).catch((error) => console.warn("[TestPilot] Run patch failed:", error));
 }
 
 // ---------------------------------------------------------------------------
@@ -448,9 +523,10 @@ async function ensurePlaywrightSuite(projectId: string): Promise<Suite> {
   try {
     await cloud.createSuiteRecord(suite);
   } catch (error) {
-    // The run can proceed without the suite row; the next full load re-lists
-    // whatever the gateway accepted and this method re-creates if missing.
-    console.warn("[TestPilot] Playwright suite create failed:", error);
+    // The run can proceed without the suite row; the next boot's heal
+    // re-creates it. Silence once hid exactly this failure — without the
+    // row no OTHER browser can see the suite.
+    warnCloudWriteFailure("Suite row")(error);
   }
   return suite;
 }
@@ -491,7 +567,10 @@ export async function runPlaywrightTests(input: {
     progress: 0
   };
   emit({ ...state, runs: sortRuns([run, ...state.runs]), activeRunnerRun: { runId: id, projectId: input.projectId } });
-  void cloud.createRunRecord(run).catch(() => undefined);
+  // The gateway row is what makes this run visible from every other
+  // browser, so a failed insert must not vanish silently — it is exactly
+  // how runs used to go missing cross-browser.
+  void cloud.createRunRecord(run).catch(warnCloudWriteFailure("Run"));
   toast.info(translate("toast.runStarted"), { description: run.name });
 
   // Live progress while the suite runs: poll the runner's /status every 2 s
@@ -577,7 +656,7 @@ export async function runPlaywrightTests(input: {
 
     // Persist terminal state, case rows, and one issue per failure (capped so
     // a broken suite cannot flood the issues board).
-    void cloud.updateRunRecord(finished).catch(() => undefined);
+    void cloud.updateRunRecord(finished).catch(warnCloudWriteFailure("Run result"));
     persistCases(cases);
     for (const failedCase of cases.filter((entry) => entry.status === "failed").slice(0, 5)) {
       createIssueFromCase(input.projectId, finished, failedCase);
@@ -699,6 +778,15 @@ export function deleteProject(projectId: string): void {
     issues: sortIssues(state.issues.filter((entry) => entry.projectId !== projectId)),
     runs: sortRuns(state.runs.filter((entry) => entry.projectId !== projectId))
   });
+  // The workspace binding is browser-local: without this cleanup a deleted
+  // project leaves an orphan folder registry behind, and its stale spec
+  // paths keep firing 404 file reads from every page that touches it.
+  try {
+    localStorage.removeItem(`wb-folder-root.v1:${projectId}`);
+  } catch {
+    /* private mode — nothing to clean */
+  }
+  setWorkspaceInfo(projectId, null);
   toast.success(translate("toast.projectDeleted"), { description: name });
   void cloud.deleteProjectRecord(projectId).catch((error) => {
     toast.error(translate("toast.syncFailed"), { description: name });
@@ -753,8 +841,14 @@ export function deleteTestFile(input: { projectId: string; path: string }): Prom
   return cloud.deleteTestFile(input);
 }
 
-export function saveWorkspaceSettings(input: { projectId: string; baseURL: string }): Promise<void> {
+export function saveWorkspaceSettings(input: { projectId: string } & cloud.WorkspaceSettings): Promise<void> {
   return cloud.saveWorkspaceSettings(input);
+}
+
+/** The server-side workspace binding (root + spec paths) another browser
+ *  needs to render this project's suite spec list. */
+export function loadWorkspaceSettings(projectId: string): Promise<cloud.WorkspaceSettings | null> {
+  return cloud.loadWorkspaceSettings(projectId);
 }
 
 /** Import: replaces the project's stored file set with exactly these files.

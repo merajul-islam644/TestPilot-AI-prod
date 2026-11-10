@@ -11,6 +11,7 @@ import type { FolderNode } from "../../lib/workspace/localFolder";
 import { CODE_FILE_EXTENSIONS, isRunnableSpecPath } from "../../lib/workspace/importFiles";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
+import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
 import { getDefaultEnvironment } from "../../shared/useWorkspaceName";
 import { DEFAULT_BASE_URL, readSavedRoot, readSavedSettings } from "../workbench/data/useTestWorkspace";
 import { formatDate, formatPercent, formatRelative } from "../../lib/format";
@@ -87,7 +88,18 @@ export function ProjectDetailPage() {
   // It can only do that with an open runner-mode folder holding specs —
   // anything else (no folder, browser-picked folder, zero specs) keeps the
   // button disabled with the reason on hover.
-  const workspaceInfo = useWorkspaceInfo(params.projectId ?? "");
+  const localWorkspace = useWorkspaceInfo(params.projectId ?? "");
+  // A browser that never opened the folder falls back to the gateway binding
+  // (published by whichever browser did open it): same suite spec list, read
+  // through the same runner on this machine. Run dispatch stays local-only —
+  // canRunDirect still requires THIS browser's saved root below.
+  const binding = useWorkspaceBinding(params.projectId ?? "", !localWorkspace);
+  const workspaceInfo = localWorkspace ?? (binding?.root ? {
+    root: binding.root,
+    filesCount: binding.specPaths?.length ?? 0,
+    specPaths: binding.specPaths ?? [],
+    updatedAt: 0
+  } : null);
   const activeRunnerRun = useActiveRunnerRun();
   const savedRoot = params.projectId ? readSavedRoot(params.projectId) : null;
   const canRunDirect = Boolean(
@@ -101,7 +113,11 @@ export function ProjectDetailPage() {
   // Static spec parse of the open runner-mode folder — this is what the
   // suites tab previews (every block and step, before anything runs) and
   // what a live run's tree hydrates against.
-  const runnerRoot = savedRoot?.mode === "runner" ? savedRoot.root : null;
+  const runnerRoot = savedRoot?.mode === "runner"
+    ? savedRoot.root
+    : savedRoot
+      ? null
+      : binding?.mode === "runner" && binding.root ? binding.root : null;
   const specPaths = useMemo(() => workspaceInfo?.specPaths ?? [], [workspaceInfo]);
   const blocks = useSpecBlocks(runnerRoot, specPaths);
 
@@ -169,8 +185,9 @@ export function ProjectDetailPage() {
     return true;
   }), [projectRuns, runQuery, runStatusFilter]);
   // Suites derive from the opened workspace (Rasta B) — the registry
-  // subscription makes this re-render when a folder opens or closes.
-  const workspace = useWorkspaceInfo(params.projectId ?? "");
+  // subscription makes this re-render when a folder opens or closes. In a
+  // browser without the folder, workspaceInfo carries the gateway binding.
+  const workspace = workspaceInfo;
   const derivedSuite = params.projectId ? derivedSuiteForProject(params.projectId) : null;
 
   // Per-day passed/failed for this project, last 30 days.

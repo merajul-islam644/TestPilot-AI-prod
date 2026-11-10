@@ -1,6 +1,7 @@
 import { readSavedRoot } from "../features/workbench/data/useTestWorkspace";
 import { isRunnableSpecPath, pathSkipReason } from "../lib/workspace/importFiles";
 import { localFolder, type FolderNode } from "../lib/workspace/localFolder";
+import { saveWorkspaceSettings } from "../lib/demo/store";
 import { setWorkspaceInfo } from "./workspaceRegistry";
 
 // Once per page load per project. The bootstrap exists so a browser that has
@@ -51,12 +52,23 @@ export async function bootstrapWorkspaceInfos(projectIds: string[]): Promise<voi
       const { tree, exists } = await localFolder.listTree({ root: saved.root });
       if (!exists) return;
       const paths = flattenPaths(tree).filter((path) => pathSkipReason(path) === null);
+      const specPaths = paths.filter(isRunnableSpecPath);
       setWorkspaceInfo(projectId, {
         root: saved.root,
         filesCount: paths.length,
-        specPaths: paths.filter(isRunnableSpecPath),
+        specPaths,
         updatedAt: Date.now()
       });
+      // Publish the binding to the gateway: this is what lets a browser that
+      // never opened the folder render the same suite spec list (it fetches
+      // root + spec paths from here, then reads the files through the runner,
+      // which serves the same disk). projectIds come from the domain catalog,
+      // so bindings are never persisted for deleted projects. Quiet failure —
+      // the next boot re-scans and re-publishes.
+      if (specPaths.length > 0) {
+        void saveWorkspaceSettings({ projectId, root: saved.root, mode: "runner", specPaths })
+          .catch((error) => console.warn("[TestPilot] Workspace binding save failed:", error));
+      }
     } catch {
       // Runner offline — suites show "no workspace" until the next reload.
     }

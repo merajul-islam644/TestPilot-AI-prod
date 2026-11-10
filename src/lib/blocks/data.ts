@@ -484,6 +484,21 @@ export async function loadDomain(): Promise<DomainSnapshot> {
   return listDomain();
 }
 
+/** Runs only — the cross-browser adoption probe refreshes just this one
+ *  collection while hunting for a run another browser dispatched; a full
+ *  loadDomain every poll would be four collections for one check. */
+export async function listRunRecords(): Promise<Run[]> {
+  const runRecords = await listRecords("Run");
+  const runs: Run[] = [];
+  for (const record of runRecords) {
+    const run = fromRunRecord(record);
+    const itemId = recordItemId(record);
+    if (run.id && itemId) itemIds.Run.set(run.id, itemId);
+    runs.push(run);
+  }
+  return runs;
+}
+
 // ---------------------------------------------------------------------------
 // Writes -- called fire-and-forget by the store: a failed cloud write must
 // never break the UI; the record re-syncs on the next full load. The store
@@ -697,7 +712,7 @@ export async function loadTestWorkspace(projectId: string): Promise<StoredWorksp
   for (const record of records) {
     if (asString(record.projectId) !== projectId) continue;
     if (asString(record.key) === settingsKeyOf(projectId)) {
-      baseURL = asString(record.content);
+      baseURL = parseWorkspaceSettings(asString(record.content)).baseURL ?? "";
       continue;
     }
     const path = asString(record.filename);
@@ -766,9 +781,45 @@ export async function deleteTestFile(input: { projectId: string; path: string })
   itemIds.TestSpec.delete(key);
 }
 
-/** Workspace settings live on a dedicated record that never enters the tree. */
-export async function saveWorkspaceSettings(input: { projectId: string; baseURL: string }): Promise<void> {
-  await saveTestFile({ projectId: input.projectId, path: SETTINGS_PATH, content: input.baseURL });
+/** Workspace-level settings persisted beside the spec files, as JSON on the
+ *  dedicated `__workspace__` record. The browser that opened the folder
+ *  publishes its runner binding (root + spec paths) here, so every OTHER
+ *  browser can render the same suite spec list — the runner reads the same
+ *  files on this machine regardless of which browser asks. */
+export type WorkspaceSettings = {
+  baseURL?: string;
+  root?: string;
+  mode?: "fsa" | "runner";
+  specPaths?: string[];
+};
+
+function parseWorkspaceSettings(content: string): WorkspaceSettings {
+  if (!content) return {};
+  try {
+    const parsed = JSON.parse(content) as WorkspaceSettings;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {
+    // Legacy records stored the bare base-URL string.
+  }
+  return { baseURL: content };
+}
+
+/** Merge-write: patches keep fields other callers set (baseURL vs the
+ *  runner binding) so one writer never clobbers another. */
+export async function saveWorkspaceSettings(input: { projectId: string } & WorkspaceSettings): Promise<void> {
+  const records = await listRecords("TestSpec");
+  const existing = records.find((record) => asString(record.key) === settingsKeyOf(input.projectId));
+  const current = parseWorkspaceSettings(existing ? asString(existing.content) : "");
+  const { projectId, ...patch } = input;
+  await saveTestFile({ projectId, path: SETTINGS_PATH, content: JSON.stringify({ ...current, ...patch }) });
+}
+
+export async function loadWorkspaceSettings(projectId: string): Promise<WorkspaceSettings | null> {
+  const records = await listRecords("TestSpec");
+  const record = records.find((entry) => asString(entry.key) === settingsKeyOf(projectId));
+  if (!record) return null;
+  const settings = parseWorkspaceSettings(asString(record.content));
+  return Object.keys(settings).length > 0 ? settings : null;
 }
 
 /** Live import state surfaced in the explorer and the status bar, so a

@@ -707,6 +707,11 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .case-dot.skipped { background: hsl(var(--muted-foreground) / 0.7); }
 .case-dot.notrun { background: transparent; border: 1.5px solid hsl(var(--muted-foreground) / 0.45); }
 .case-dot.running { animation: casePulse 1.2s ease-in-out infinite; background: hsl(var(--primary)); }
+/* Passed/failed rows carry a ✓ / ✗ mark instead of a bare dot — the state
+   reads without color and matches the file-head count badges. */
+.case-ico { flex: none; }
+.case-ico.passed { color: hsl(var(--success)); }
+.case-ico.failed { color: hsl(var(--destructive)); }
 .case-row.is-running { background: hsl(var(--primary) / 0.06); }
 .case-row.is-running .case-title { color: hsl(var(--primary)); }
 .case-row.now-running .case-title { color: hsl(var(--primary)); font-weight: 600; }

@@ -17,6 +17,7 @@ import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { RunStatusBadge, SimulatedBadge, StatusBadge } from "../../shared/ui/StatusBadge";
 import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
+import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { readSavedRoot } from "../workbench/data/useTestWorkspace";
 import { RUN_STATUS_KEYS } from "./runColumns";
@@ -112,11 +113,25 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
   // Per-block tree hydration: for runner runs whose results predate the
   // file/steps fields (or lost them to a reload), re-parse the linked
   // workspace's specs and attach cases by title. Legacy simulated runs
-  // keep the flat table.
+  // keep the flat table. A browser that never opened the folder falls back
+  // to the gateway workspace binding — the runner serves the same disk to
+  // every browser on the machine, so the live tree renders identically
+  // there instead of collapsing to an empty flat table.
   const savedRoot = run ? readSavedRoot(run.projectId) : null;
-  const runnerRoot = savedRoot?.mode === "runner" ? savedRoot.root : null;
-  const workspace = useWorkspaceInfo(run?.projectId ?? "");
+  const localWorkspace = useWorkspaceInfo(run?.projectId ?? "");
+  const binding = useWorkspaceBinding(run?.projectId ?? "", !localWorkspace);
+  const workspace = localWorkspace ?? (binding?.root ? {
+    root: binding.root,
+    filesCount: binding.specPaths?.length ?? 0,
+    specPaths: binding.specPaths ?? [],
+    updatedAt: 0
+  } : null);
   const isRunnerRun = run ? runTrigger(run) === "runner" : false;
+  const runnerRoot = savedRoot?.mode === "runner"
+    ? savedRoot.root
+    : savedRoot
+      ? null // a local FSA root can't be read here and must not fall back
+      : binding?.mode === "runner" && binding.root ? binding.root : null;
   const specPaths = useMemo(
     () => (isRunnerRun ? workspace?.specPaths ?? [] : []),
     [isRunnerRun, workspace]
@@ -277,7 +292,7 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
             ]}
             loading={run.status === "pending"}
             loadingRows={8}
-            rows={completedCases}
+            rows={treeCases.length > 0 ? treeCases : completedCases}
             tailLoadingRows={run.status === "running" ? Math.max(0, cases.length - completedCount) : 0}
           />
         )}

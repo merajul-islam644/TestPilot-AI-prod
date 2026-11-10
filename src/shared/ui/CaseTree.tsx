@@ -289,7 +289,15 @@ export function CaseTree({ cases, files, onOpenIssue, running }: {
                     className={`case-row${test.status === "failed" ? " has-error" : ""}${testRunning ? " is-running" : ""}`}
                     title={test.describeChain.length > 0 ? `${test.describeChain.join(" › ")} › ${test.title}` : test.title}
                   >
-                    <span className={`case-dot ${testRunning ? "running" : statusClass(test.status)}`} aria-hidden />
+                    {/* ✓ / ✗ marks instead of bare dots — the state reads
+                        without color and matches the file-head badges. */}
+                    {test.status === "passed" ? (
+                      <CircleCheck className="case-ico passed" size={15} aria-hidden />
+                    ) : test.status === "failed" ? (
+                      <CircleX className="case-ico failed" size={15} aria-hidden />
+                    ) : (
+                      <span className={`case-dot ${testRunning ? "running" : statusClass(test.status)}`} aria-hidden />
+                    )}
                     <span className="case-title">{test.title}</span>
                     <span className="case-dur">
                       {testRunning
@@ -331,7 +339,13 @@ export function CaseTree({ cases, files, onOpenIssue, running }: {
                           style={{ paddingLeft: indent }}
                           title={stepError ?? step.title}
                         >
-                          <span className={`case-dot sm ${stepRunning ? "running" : liveStep ? (liveStep.error ? "failed" : "passed") : statusClass(step.status)}`} aria-hidden />
+                          {stepFailed ? (
+                            <CircleX className="case-ico failed" size={13} aria-hidden />
+                          ) : step.status === "passed" || (liveStep && !liveStep.error) ? (
+                            <CircleCheck className="case-ico passed" size={13} aria-hidden />
+                          ) : (
+                            <span className={`case-dot sm ${stepRunning ? "running" : statusClass(step.status)}`} aria-hidden />
+                          )}
                           <span className="case-title">{step.title}</span>
                           <span className="case-dur">
                             {stepRunning

@@ -231,10 +231,18 @@ export const PLAYWRIGHT_SUITE_ID_PREFIX = "suite-pw-";
  * workspace with runnable specs is known — callers show the open-folder
  * empty state instead of invented rows. The id matches ensurePlaywrightSuite
  * so run ↔ suite linkage keeps working.
+ *
+ * When THIS browser has no registry entry (fresh sign-in elsewhere), the
+ * cloud catalog still has the suite ROW the machine that opened the folder
+ * pushed to the gateway — hand that back so Test Suites, the project page
+ * and the project cards stay visible from any browser. Only the specs
+ * themselves (file reads) stay on the machine that owns the folder.
  */
 export function derivedSuiteForProject(projectId: string): Suite | null {
   const info = getWorkspaceInfo(projectId);
-  if (!info || info.specPaths.length === 0) return null;
+  if (!info || info.specPaths.length === 0) {
+    return suites.find((suite) => suite.id === `${PLAYWRIGHT_SUITE_ID_PREFIX}${projectId}` && suite.status === "active") ?? null;
+  }
   const count = info.specPaths.length;
   return {
     id: `${PLAYWRIGHT_SUITE_ID_PREFIX}${projectId}`,
@@ -584,6 +592,33 @@ export function buildDailyCounts(runs: Run[], days: number, now = Date.now()): {
     if (buckets.has(dayStart)) buckets.set(dayStart, (buckets.get(dayStart) ?? 0) + 1);
   }
   return [...buckets.entries()].map(([dayStart, value]) => ({ dayStart, label: labels.get(dayStart) ?? "", value }));
+}
+
+// Dev-only console aid for "why is this list empty on THIS browser" reports:
+// `testpilotDebug.catalogs()` shows what the gateway load actually filled,
+// `testpilotDebug.registry()` shows the browser-local workspace bindings —
+// the two things every cross-browser mismatch comes down to. Stripped from
+// production builds.
+if (import.meta.env.DEV) {
+  (window as unknown as { testpilotDebug: unknown }).testpilotDebug = {
+    catalogs: () => ({
+      projects: projects.map((entry) => ({ id: entry.id, name: entry.name })),
+      suites: suites.map((entry) => ({ id: entry.id, projectId: entry.projectId, name: entry.name, status: entry.status }))
+    }),
+    registry: () => {
+      try {
+        const roots: Record<string, string> = {};
+        for (let index = 0; index < localStorage.length; index++) {
+          const key = localStorage.key(index);
+          if (key && key.startsWith("wb-folder-root.v1:")) roots[key] = localStorage.getItem(key) ?? "";
+        }
+        const info = localStorage.getItem("testpilot:workspace-info.v1");
+        return { roots, workspaceInfo: info ? JSON.parse(info) : null };
+      } catch {
+        return { roots: {}, workspaceInfo: null };
+      }
+    }
+  };
 }
 
 export function buildPassRateTrend(runs: Run[], days: number, now = Date.now()): { label: string; value: number }[] {
