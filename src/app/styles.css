@@ -691,10 +691,13 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 /* Per-block results tree (CaseTree): spec file → test blocks → test.step
    blocks, each row carrying a status dot + duration. Used in the workbench
    Results tab, run detail and suite detail. */
-.case-tree { display: grid; gap: 10px; }
-.case-file { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); overflow: hidden; }
-.case-file-head { align-items: center; background: hsl(var(--secondary) / 0.45); border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); display: flex; font-size: 12.5px; gap: 8px; padding: 8px 12px; }
-.case-file-head .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.case-tree { display: grid; gap: 16px; }
+/* Each spec reads as ONE unit: lifted card, an accent spine on the left,
+   and a header strong enough to separate it from the rows below it. */
+.case-file { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-left: 3px solid hsl(var(--primary) / 0.55); border-radius: var(--radius-card); box-shadow: var(--shadow-card); overflow: hidden; }
+.case-file-head { align-items: center; background: hsl(var(--secondary) / 0.7); border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); display: flex; font-size: 13px; gap: 10px; padding: 10px 14px; }
+.case-file-head > svg { color: hsl(var(--primary)); flex: none; }
+.case-file-head .mono { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case-file-counts { align-items: center; display: inline-flex; gap: 6px; margin-left: auto; white-space: nowrap; }
 .case-file-empty { margin: 0; padding: 10px 12px; }
 .case-test { border-top: 1px solid hsl(var(--border)); }
