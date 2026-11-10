@@ -42,6 +42,9 @@ const WATERMARK_ROWS: [string, string][] = [
   ["Toggle Panel", "Ctrl + J"]
 ];
 
+/** Last path segment — the replace-guard dialog names folders by leaf. */
+const leafOf = (value: string) => value.split(/[\\/]/).filter(Boolean).pop() ?? value;
+
 export function Workbench({ project }: { project: Project }) {
   const { t } = useT();
   const ws = useTestWorkspace(project);
@@ -403,6 +406,18 @@ export function Workbench({ project }: { project: Project }) {
             void ws.applyImport();
           }}
           title={t("tests.importConfirmTitle")}
+        />
+      ) : null}
+
+      {ws.pendingOpen ? (
+        <ConfirmDialog
+          confirmLabel="Replace folder"
+          message={`“${leafOf(ws.pendingOpen.current)}” is this project's open workspace. Opening “${leafOf(
+            ws.pendingOpen.mode === "runner" ? ws.pendingOpen.path : ws.pendingOpen.dir.name
+          )}” replaces it — the project's specs, suites and future runs will read the new folder. Past runs keep their results.`}
+          onCancel={() => ws.dismissOpen()}
+          onConfirm={() => void ws.confirmOpen()}
+          title="Replace the open folder?"
         />
       ) : null}
     </div>

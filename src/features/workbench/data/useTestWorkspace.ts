@@ -83,6 +83,21 @@ const FOLDER_SETTINGS_PREFIX = "wb-folder-settings.v1:";
 
 type SavedRoot = { root: string; mode: "fsa" | "runner" };
 
+/** A picked folder the replace-guard intercepted: the OS dialog already
+ *  closed, so the confirmed load runs from this — no second pick. */
+type PendingOpen =
+  | { mode: "runner"; path: string; current: string }
+  | { mode: "fsa"; dir: FsDirHandle; current: string; from?: { pickedName: string; innerPath: string } };
+
+/** Workspace-identity compare that folds what Windows considers noise
+ *  (separator direction, case, a trailing slash). Re-picking the SAME
+ *  folder must pass straight through — only a genuinely different
+ *  folder earns the replace confirm. */
+function sameWorkspaceRoot(a: string, b: string): boolean {
+  const norm = (value: string) => value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
 function readSavedRoot(projectId: string): SavedRoot | null {
   try {
     const raw = localStorage.getItem(FOLDER_ROOT_PREFIX + projectId);
@@ -219,6 +234,10 @@ export function useTestWorkspace(project: Project) {
   const [pendingImport, setPendingImport] = useState<ImportReport | undefined>(undefined);
   /** File or folder awaiting delete confirmation (explorer row). */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isFolder: boolean; count: number } | undefined>(undefined);
+  /** A picked folder awaiting the "replace the open workspace?" confirm —
+   *  an accidental different-folder pick must never swap this project's
+   *  specs silently (the old flow did exactly that). */
+  const [pendingOpen, setPendingOpen] = useState<PendingOpen | undefined>(undefined);
   const [runnerOnline, setRunnerOnline] = useState<boolean | undefined>(undefined);
   const [errorText, setErrorText] = useState<string | undefined>(undefined);
   const [outcome, setOutcome] = useState<PlaywrightRunOutcome | undefined>(undefined);
@@ -602,6 +621,42 @@ export function useTestWorkspace(project: Project) {
     }
   }
 
+  /** The confirmed FSA open: persist the handle, load, announce. Shared
+   *  by the plain pick and the replace-confirm so both run the exact
+   *  same flow (handle save → load → the inner-path / terminal toasts).
+   *  `from` is set when the pick resolved INSIDE a bigger folder. */
+  async function openFsaWorkspace(dir: FsDirHandle, from?: { pickedName: string; innerPath: string }): Promise<void> {
+    await saveRootHandle(project.id, dir);
+    if (from) {
+      // Resolved from inside a bigger pick: announce WHICH folder
+      // became the workspace (loadFolder stays quiet so this is one
+      // toast, not two).
+      const ok = await loadFolder(dir.name, { announce: false }, dir);
+      if (!ok) {
+        await clearRootHandle(project.id);
+        return;
+      }
+      toast.success(`Opened the “${dir.name}” workspace`, {
+        description: `Found inside “${from.pickedName}” at ${from.innerPath} — only that folder and its contents are open.`
+      });
+      // The browser picker hides the real path — the terminal can't
+      // cd into this workspace and will start at the app root. Say
+      // so NOW; a silent wrong-looking prompt is the trap.
+      toast.info("Terminal note for a browser-picked workspace", {
+        description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
+      });
+      return;
+    }
+    const ok = await loadFolder(dir.name, { announce: true }, dir);
+    if (ok) {
+      toast.info("Terminal note for a browser-picked workspace", {
+        description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
+      });
+    } else {
+      await clearRootHandle(project.id);
+    }
+  }
+
   /** Folder dialog → open. Lattice parity: when the local agent is
    *  reachable, "Open Folder" IS the native OS dialog — the pick is a
    *  real disk folder, so the editor edits files in place AND the
@@ -612,7 +667,9 @@ export function useTestWorkspace(project: Project) {
    *  the agent dies mid-open or has no GUI. Cancel is a no-op.
    *  Workspace rule: the pick must BE (or contain) an e2e/playwright
    *  folder — resolveRoot/resolveWorkspaceRoot decide; a folder with
-   *  neither is refused with an error and NOTHING opens. */
+   *  neither is refused with an error and NOTHING opens.
+   *  Replace rule: a DIFFERENT folder picked while one is already open
+   *  pauses at the pendingOpen confirm instead of swapping silently. */
   async function openFolder(): Promise<void> {
     if (opening) return;
     if (runnerOnline !== false) {
@@ -625,6 +682,12 @@ export function useTestWorkspace(project: Project) {
             toast.error("Not an e2e/playwright workspace", {
               description: `“${leaf}” has no e2e or playwright folder inside it — open that folder itself, or one that contains one. Nothing was opened.`
             });
+            return;
+          }
+          if (root && !sameWorkspaceRoot(root, inner)) {
+            // A different valid folder picked while one is already open:
+            // ask before swapping — this used to replace it silently.
+            setPendingOpen({ mode: "runner", path: inner, current: root });
             return;
           }
           await loadFolder(inner, { announce: true });
@@ -649,35 +712,18 @@ export function useTestWorkspace(project: Project) {
           return;
         }
         const dir = resolved.root;
-        await saveRootHandle(project.id, dir);
-        if (resolved.innerPath) {
-          // Resolved from inside a bigger pick: announce WHICH folder
-          // became the workspace (loadFolder stays quiet so this is one
-          // toast, not two).
-          const ok = await loadFolder(dir.name, { announce: false }, dir);
-          if (!ok) {
-            await clearRootHandle(project.id);
-            return;
-          }
-          toast.success(`Opened the “${dir.name}” workspace`, {
-            description: `Found inside “${picked.name}” at ${resolved.innerPath} — only that folder and its contents are open.`
-          });
-          // The browser picker hides the real path — the terminal can't
-          // cd into this workspace and will start at the app root. Say
-          // so NOW; a silent wrong-looking prompt is the trap.
-          toast.info("Terminal note for a browser-picked workspace", {
-            description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
+        if (root && !sameWorkspaceRoot(root, dir.name)) {
+          // Same replace-guard as the runner pick: confirm before the
+          // project's workspace silently points somewhere else.
+          setPendingOpen({
+            mode: "fsa",
+            dir,
+            current: root,
+            from: resolved.innerPath ? { pickedName: picked.name, innerPath: resolved.innerPath } : undefined
           });
           return;
         }
-        const ok = await loadFolder(dir.name, { announce: true }, dir);
-        if (ok) {
-          toast.info("Terminal note for a browser-picked workspace", {
-            description: "Chrome hides this folder's real path, so the shell starts at the app root instead. Reopen the folder while the server is online to land the shell inside it."
-          });
-        } else {
-          await clearRootHandle(project.id);
-        }
+        await openFsaWorkspace(dir, resolved.innerPath ? { pickedName: picked.name, innerPath: resolved.innerPath } : undefined);
       } catch (error) {
         console.warn("[TestPilot] FSA folder pick failed:", error);
         toast.error("Folder picker failed", {
@@ -691,6 +737,19 @@ export function useTestWorkspace(project: Project) {
     toast.error("Folder open unavailable", {
       description: "Start the local server first (the terminal tab's Start server button), or use a browser with the folder picker."
     });
+  }
+
+  /** The replace-confirm's OK: run the exact open flow the guard
+   *  intercepted. No second OS dialog — the pick was already made. */
+  async function confirmOpen(): Promise<void> {
+    const pending = pendingOpen;
+    setPendingOpen(undefined);
+    if (!pending) return;
+    if (pending.mode === "runner") {
+      await loadFolder(pending.path, { announce: true });
+      return;
+    }
+    await openFsaWorkspace(pending.dir, pending.from);
   }
 
   /** File dialog → the file's folder becomes the workspace and the file
@@ -1289,6 +1348,10 @@ export function useTestWorkspace(project: Project) {
     searchWorkspace,
     setContent,
     openFolder,
+    /** Replace-guard: the intercepted folder pick + its confirm/dismiss. */
+    pendingOpen,
+    confirmOpen,
+    dismissOpen: () => setPendingOpen(undefined),
     openFileFromDisk,
     closeFolder,
     saveFile,
