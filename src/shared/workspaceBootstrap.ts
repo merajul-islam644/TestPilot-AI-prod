@@ -1,7 +1,7 @@
-import { readSavedRoot } from "../features/workbench/data/useTestWorkspace";
+import { readSavedRoot, sameWorkspaceRoot } from "../features/workbench/data/useTestWorkspace";
 import { isRunnableSpecPath, pathSkipReason } from "../lib/workspace/importFiles";
 import { localFolder, type FolderNode } from "../lib/workspace/localFolder";
-import { saveWorkspaceSettings } from "../lib/demo/store";
+import { loadWorkspaceSettings, saveWorkspaceSettings } from "../lib/demo/store";
 import { setWorkspaceInfo } from "./workspaceRegistry";
 
 // Once per page load per project. The bootstrap exists so a browser that has
@@ -48,6 +48,19 @@ export async function bootstrapWorkspaceInfos(projectIds: string[]): Promise<voi
     attempted.add(projectId);
     const saved = readSavedRoot(projectId);
     if (!saved || saved.mode !== "runner") return;
+    // Never clobber a NEWER binding from another browser: whoever opened a
+    // different folder (or closed the shared one) AFTER this browser opened
+    // its own owns the binding — the open-time stamp decides, and every
+    // browser here shares one machine clock. Same-root republishes still
+    // pass through to renew specPaths; an older or stamp-less gateway root
+    // is re-claimed. This guard is what keeps a stale browser's boot from
+    // resurrecting a folder the user replaced in another browser.
+    const existing = await loadWorkspaceSettings(projectId).catch(() => null);
+    if (existing
+      && !sameWorkspaceRoot(existing.root ?? "", saved.root)
+      && (existing.updatedAt ?? 0) > (saved.at ?? 0)) {
+      return;
+    }
     try {
       const { tree, exists } = await localFolder.listTree({ root: saved.root });
       if (!exists) return;
@@ -66,7 +79,9 @@ export async function bootstrapWorkspaceInfos(projectIds: string[]): Promise<voi
       // so bindings are never persisted for deleted projects. Quiet failure —
       // the next boot re-scans and re-publishes.
       if (specPaths.length > 0) {
-        void saveWorkspaceSettings({ projectId, root: saved.root, mode: "runner", specPaths })
+        // updatedAt carries the OPEN event's time (saved.at), not now — a
+        // mere re-advertisement must not look like a newer claim.
+        void saveWorkspaceSettings({ projectId, root: saved.root, mode: "runner", specPaths, updatedAt: saved.at ?? Date.now() })
           .catch((error) => console.warn("[TestPilot] Workspace binding save failed:", error));
       }
     } catch {

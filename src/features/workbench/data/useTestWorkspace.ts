@@ -81,7 +81,7 @@ const EDITOR_MAX_FILE_BYTES = 2_000_000;
 const FOLDER_ROOT_PREFIX = "wb-folder-root.v1:";
 const FOLDER_SETTINGS_PREFIX = "wb-folder-settings.v1:";
 
-type SavedRoot = { root: string; mode: "fsa" | "runner" };
+type SavedRoot = { root: string; mode: "fsa" | "runner"; /** Open-event time (Date.now()) — the cross-browser tiebreaker. */ at?: number };
 
 /** A picked folder the replace-guard intercepted: the OS dialog already
  *  closed, so the confirmed load runs from this — no second pick. */
@@ -92,8 +92,9 @@ type PendingOpen =
 /** Workspace-identity compare that folds what Windows considers noise
  *  (separator direction, case, a trailing slash). Re-picking the SAME
  *  folder must pass straight through — only a genuinely different
- *  folder earns the replace confirm. */
-function sameWorkspaceRoot(a: string, b: string): boolean {
+ *  folder earns the replace confirm. Shared with the boot publisher,
+ *  which uses it to leave newer cross-browser bindings alone. */
+export function sameWorkspaceRoot(a: string, b: string): boolean {
   const norm = (value: string) => value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
   return norm(a) === norm(b);
 }
@@ -102,9 +103,13 @@ function readSavedRoot(projectId: string): SavedRoot | null {
   try {
     const raw = localStorage.getItem(FOLDER_ROOT_PREFIX + projectId);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { root?: unknown; mode?: unknown };
+    const parsed = JSON.parse(raw) as { root?: unknown; mode?: unknown; at?: unknown };
     if (typeof parsed.root !== "string" || parsed.root.length === 0) return null;
-    return { root: parsed.root, mode: parsed.mode === "fsa" ? "fsa" : "runner" };
+    return {
+      root: parsed.root,
+      mode: parsed.mode === "fsa" ? "fsa" : "runner",
+      at: typeof parsed.at === "number" ? parsed.at : undefined
+    };
   } catch {
     return null;
   }
@@ -315,33 +320,69 @@ export function useTestWorkspace(project: Project) {
       // A refresh must never cost the workspace: right after reload the
       // local agent is often still waking up, and loadFolder fails
       // IDENTICALLY for "runner unreachable" and "folder vanished".
-      // Retry while the runner is down (its liveness flips within a few
-      // seconds); only once the runner is verifiably up AND the folder
-      // still fails does the memory get cleared.
-      const restoreStartedAt = Date.now();
-      const tryRestore = async (): Promise<void> => {
-        const ok = await loadFolder(saved.root, { announce: false });
+      // But local memory is not automatically the truth — ANOTHER browser
+      // may have opened a DIFFERENT folder for this project more recently.
+      // The gateway binding carries the open time (updatedAt, same-machine
+      // clock): a newer, different runner root rebinds this browser too.
+      void (async () => {
+        let shared: cloud.WorkspaceSettings | null = null;
+        try {
+          shared = await cloud.loadWorkspaceSettings(project.id);
+        } catch (error) {
+          console.warn("[TestPilot] Shared workspace lookup failed:", error);
+        }
         if (cancelled) return;
-        if (ok) return;
-        const online = await pingRunner();
-        if (cancelled) return;
-        if (!online) {
-          if (Date.now() - restoreStartedAt < RESTORE_RETRY_WINDOW_MS) {
-            window.setTimeout(() => void tryRestore(), RESTORE_RETRY_MS);
+        const sharedRoot = shared && shared.mode === "runner" && shared.root ? shared.root : null;
+        const sharedNewer = Boolean(shared && (shared.updatedAt ?? 0) > (saved.at ?? 0));
+        if (sharedRoot && sharedNewer && !sameWorkspaceRoot(sharedRoot, saved.root)) {
+          const url = (sharedRoot && shared?.baseURL) || DEFAULT_BASE_URL;
+          setBaseURL(url);
+          setSavedBaseURL(url);
+          const adopted = await tryRestoreRunner(sharedRoot);
+          if (cancelled) return;
+          if (adopted) {
+            const name = sharedRoot.split(/[\\/]/).filter(Boolean).pop() ?? sharedRoot;
+            toast.info("Workspace connected", {
+              description: `${name} — opened from another browser; it is now this project's workspace here too.`
+            });
           } else {
-            // Runner never came up — keep the saved folder, show the
-            // empty state; the next refresh retries from scratch.
-            startEmptyWorkspace();
+            // The rebound folder is gone from disk — fall back to what
+            // this browser still remembers instead of ending empty.
+            void tryRestoreRunner(saved.root);
           }
           return;
         }
-        // Runner up and the folder still failed → genuinely gone.
-        writeSavedRoot(project.id, null);
-        startEmptyWorkspace();
-      };
-      void tryRestore();
+        void tryRestoreRunner(saved.root);
+      })();
     } else {
-      startEmptyWorkspace();
+      // No local memory: ANOTHER browser on this machine may have bound
+      // this project's folder through the runner — its gateway record
+      // (root + mode + baseURL) is exactly what a runner open needs, and
+      // the runner serves the same disk regardless of which browser asks.
+      // FSA handles are browser-local by nature and never adopt.
+      void (async () => {
+        let shared: cloud.WorkspaceSettings | null = null;
+        try {
+          shared = await cloud.loadWorkspaceSettings(project.id);
+        } catch (error) {
+          console.warn("[TestPilot] Shared workspace lookup failed:", error);
+        }
+        if (cancelled) return;
+        if (!shared || shared.mode !== "runner" || !shared.root) {
+          startEmptyWorkspace();
+          return;
+        }
+        const url = shared.baseURL || DEFAULT_BASE_URL;
+        setBaseURL(url);
+        setSavedBaseURL(url);
+        const adopted = await tryRestoreRunner(shared.root);
+        if (!cancelled && adopted) {
+          const name = shared.root.split(/[\\/]/).filter(Boolean).pop() ?? shared.root;
+          toast.info("Workspace connected", {
+            description: `${name} — linked from another browser on this machine. Reads and writes go to the same folder through the runner.`
+          });
+        }
+      })();
     }
     function startEmptyWorkspace() {
       setRoot(null);
@@ -353,6 +394,39 @@ export function useTestWorkspace(project: Project) {
       setSaveStates({});
       setLoaded(true);
       setRevision((value) => value + 1);
+    }
+
+    /** Open `rootPath` through the runner, riding out the agent's slow
+     *  boot: loadFolder fails IDENTICALLY for "runner unreachable" and
+     *  "folder vanished", so retry every 1.5s for up to 30s while the
+     *  runner is down and only treat the folder as gone once the runner
+     *  is verifiably up AND the open still failed. Resolves true when
+     *  the folder opened (shared-browser adoption toasts on that). */
+    async function tryRestoreRunner(rootPath: string): Promise<boolean> {
+      const restoreStartedAt = Date.now();
+      for (;;) {
+        const ok = await loadFolder(rootPath, { announce: false });
+        if (cancelled) return false;
+        if (ok) return true;
+        const online = await pingRunner();
+        if (cancelled) return false;
+        if (online) {
+          // Runner up and the folder still failed → genuinely gone.
+          // Only forget it when the user is not mid-way into opening a
+          // different folder (a replaced saved root must survive).
+          if (readSavedRoot(project.id)?.root === rootPath) writeSavedRoot(project.id, null);
+          startEmptyWorkspace();
+          return false;
+        }
+        if (Date.now() - restoreStartedAt >= RESTORE_RETRY_WINDOW_MS) {
+          // Runner never came up — show the empty state; the next
+          // refresh retries from scratch.
+          startEmptyWorkspace();
+          return false;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, RESTORE_RETRY_MS));
+        if (cancelled) return false;
+      }
     }
     return () => {
       cancelled = true;
@@ -557,7 +631,7 @@ export function useTestWorkspace(project: Project) {
    * would still point at the previous backend this render — the handle
    * is the truth, so it rides along explicitly).
    */
-  async function loadFolder(rootPath: string, opts: { announce: boolean }, fsaHandle: FsDirHandle | null = null): Promise<boolean> {
+  async function loadFolder(rootPath: string, opts: { announce: boolean; claim?: boolean }, fsaHandle: FsDirHandle | null = null): Promise<boolean> {
     setOpening(true);
     // A stale reveal (a file created before this open) must not leak
     // into the new session's default tab.
@@ -589,6 +663,27 @@ export function useTestWorkspace(project: Project) {
       setFsaRoot(fsaHandle);
       setFsaReconnect(null);
       writeSavedRoot(project.id, { root: rootPath, mode: fsaHandle ? "fsa" : "runner" });
+      // Publish the runner binding to the gateway: every OTHER browser on
+      // this machine can then adopt the same folder on its next boot (the
+      // runner serves the same disk regardless of which browser asks).
+      // FSA handles are browser-local — they are never published.
+      if (!fsaHandle && opts.claim) {
+        // Publish the runner binding to the gateway: every OTHER browser on
+        // this machine can then adopt the same folder on its next boot (the
+        // runner serves the same disk regardless of which browser asks).
+        // Only an ACTIVE open claims the shared binding — updatedAt is the
+        // cross-browser tiebreaker. Passive restores and adoptions must NOT
+        // re-stamp it: a stale browser merely booting would then out-shout
+        // the browser that opened a different folder more recently.
+        void cloud.saveWorkspaceSettings({
+          projectId: project.id,
+          root: rootPath,
+          mode: "runner",
+          baseURL,
+          updatedAt: Date.now(),
+          specPaths: candidates.filter((path) => isRunnableSpecPath(path))
+        }).catch((error) => console.warn("[TestPilot] Workspace binding publish failed:", error));
+      }
       setPaths(candidates);
       clearAutosaves();
       setContents({});
@@ -690,7 +785,7 @@ export function useTestWorkspace(project: Project) {
             setPendingOpen({ mode: "runner", path: inner, current: root });
             return;
           }
-          await loadFolder(inner, { announce: true });
+          await loadFolder(inner, { announce: true, claim: true });
           return;
         }
         if (result.reason === "cancelled") return;
@@ -746,7 +841,7 @@ export function useTestWorkspace(project: Project) {
     setPendingOpen(undefined);
     if (!pending) return;
     if (pending.mode === "runner") {
-      await loadFolder(pending.path, { announce: true });
+      await loadFolder(pending.path, { announce: true, claim: true });
       return;
     }
     await openFsaWorkspace(pending.dir, pending.from);
@@ -860,6 +955,10 @@ export function useTestWorkspace(project: Project) {
   function closeFolder(): void {
     writeSavedRoot(project.id, null);
     void clearRootHandle(project.id);
+    // Drop the shared binding too: a browser that never opened the folder
+    // must not adopt it on its next boot once the opener closed it.
+    void cloud.saveWorkspaceSettings({ projectId: project.id, root: "", updatedAt: Date.now() })
+      .catch((error) => console.warn("[TestPilot] Shared binding clear failed:", error));
     setRoot(null);
     setFsaRoot(null);
     setFsaReconnect(null);

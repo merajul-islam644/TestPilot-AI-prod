@@ -845,12 +845,16 @@ export async function deleteTestFile(input: { projectId: string; path: string })
  *  dedicated `__workspace__` record. The browser that opened the folder
  *  publishes its runner binding (root + spec paths) here, so every OTHER
  *  browser can render the same suite spec list — the runner reads the same
- *  files on this machine regardless of which browser asks. */
+ *  files on this machine regardless of which browser asks. `updatedAt`
+ *  stamps the claiming OPEN's time (all browsers share one machine clock);
+ *  readers use it so the most recent open wins over everyone's stale
+ *  local memory. */
 export type WorkspaceSettings = {
   baseURL?: string;
   root?: string;
   mode?: "fsa" | "runner";
   specPaths?: string[];
+  updatedAt?: number;
 };
 
 function parseWorkspaceSettings(content: string): WorkspaceSettings {
