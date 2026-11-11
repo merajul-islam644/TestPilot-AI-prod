@@ -1,0 +1,280 @@
+{
+    "collectionName":  "CaseResults",
+    "fields":  [
+                   {
+                       "name":  "key",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "runId",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "projectId",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "name",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "status",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "durationMs",
+                       "type":  "Int",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "errorMessage",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "sortOrder",
+                       "type":  "Int",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Create",
+                       "type":  "OperationAccess",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Default field from BaseEntity",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Read",
+                       "type":  "OperationAccess",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Default field from BaseEntity",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Update",
+                       "type":  "OperationAccess",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Default field from BaseEntity",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Delete",
+                       "type":  "OperationAccess",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Default field from BaseEntity",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Roles",
+                       "type":  "String",
+                       "isArray":  true,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Roles allowed",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "UserIds",
+                       "type":  "String",
+                       "isArray":  true,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Users allowed",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "Permissions",
+                       "type":  "String",
+                       "isArray":  true,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Permissions allowed",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   },
+                   {
+                       "name":  "orgId",
+                       "type":  "String",
+                       "isArray":  false,
+                       "enumValues":  [
+
+                                      ],
+                       "isPIIData":  false,
+                       "isUniqueData":  false,
+                       "description":  "Organization scope",
+                       "requiredOn":  "None",
+                       "fields":  [
+
+                                  ],
+                       "validationRule":  null,
+                       "defaultValue":  null
+                   }
+               ],
+    "schemaName":  "CaseResult",
+    "schemaType":  1,
+    "isLive":  true
+}

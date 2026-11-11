@@ -5,6 +5,7 @@ import { Building2, Check, ChevronDown } from "lucide-react";
 import { useAuth } from "../providers/AuthProvider";
 import { useMyOrganizations } from "../../features/organizations/useOrganizationsAdmin";
 import { switchOrganization } from "../../lib/blocks/auth";
+import { setDataOrgId } from "../../lib/blocks/data";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import {
   DropdownMenu,
@@ -38,6 +39,11 @@ export function OrgSwitcher() {
     setSwitching(true);
     try {
       await switchOrganization(orgId);
+      // Scope the data layer to the chosen org BEFORE the reload: the
+      // gateway is tenant-wide, so an unscoped load would list the previous
+      // org's rows. setDataOrgId notifies the demo store, which drops its
+      // catalogs and re-kicks refresh against the new scope.
+      setDataOrgId(orgId);
       queryClient.clear();
       await refresh();
       toast(`${t("shell.orgSwitched")} ${orgName}`);

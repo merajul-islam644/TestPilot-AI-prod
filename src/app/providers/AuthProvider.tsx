@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { fetchSessionClaims, logout as endSession, onSessionExpired, startLogin } from "../../lib/blocks/auth";
+import { setDataOrgId } from "../../lib/blocks/data";
 
 type AuthStatus = "authenticated" | "loading" | "unauthenticated";
 
@@ -53,6 +54,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // token outright (invalid_grant) -- blocks/auth.ts already ended the
   // session server-side, this just gets the UI to notice and redirect.
   useEffect(() => onSessionExpired(() => void refresh()), [refresh]);
+
+  // The data layer follows the session's org: claims.org_id names the active
+  // org (absent on the lone-membership / Default case, which the setter
+  // normalizes to "default"). A changed scope also resets the demo store, so
+  // signing in straight into a non-default org loads THAT org's rows.
+  useEffect(() => {
+    setDataOrgId(typeof claims?.org_id === "string" ? claims.org_id : undefined);
+  }, [claims]);
 
   const login = useCallback(async (returnTo?: string) => {
     await startLogin(returnTo);

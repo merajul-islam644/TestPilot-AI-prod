@@ -20,6 +20,11 @@ export function useAvatar() {
 
   const query = useQuery({
     enabled: Boolean(userId),
+    // Silent: a failed avatar read degrades to initials by design (the
+    // storage file can 403 from a role/org that lacks file-read, e.g. right
+    // after an org switch) — the global QueryCache toast must not fire for
+    // that. The read retries on the next mount/stale window anyway.
+    meta: { silent: true },
     queryFn: async (): Promise<Avatar | null> => {
       const fileId = await getUserAvatarFileId(userId as string);
       if (!fileId) return null;

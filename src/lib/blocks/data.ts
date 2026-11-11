@@ -34,12 +34,12 @@ const SCHEMAS: SchemaName[] = ["Project", "Suite", "Run", "Issue", "TestSpec", "
 // Must match the pushed schemas exactly. System fields (ItemId, CreatedDate,
 // CreatedBy, ...) are managed by the gateway and never listed here.
 const FIELDS: Record<SchemaName, string[]> = {
-  Project: ["key", "name", "description", "icon", "tagsJson", "createdAt"],
-  Suite: ["key", "projectId", "name", "description", "status", "owner", "lastUpdatedAt"],
-  Run: ["key", "name", "projectId", "suiteId", "environment", "status", "total", "passed", "failed", "durationSec", "startedAt", "triggeredBy", "browser", "progress"],
-  Issue: ["key", "title", "projectId", "runId", "severity", "status", "message", "stepsJson", "assignee", "createdAt", "updatedAt", "historyJson"],
-  TestSpec: ["key", "projectId", "filename", "content", "baseURL", "updatedAt"],
-  CaseResult: ["key", "runId", "projectId", "name", "status", "durationMs", "errorMessage", "sortOrder"],
+  Project: ["key", "name", "description", "icon", "tagsJson", "createdAt", "orgId"],
+  Suite: ["key", "projectId", "name", "description", "status", "owner", "lastUpdatedAt", "orgId"],
+  Run: ["key", "name", "projectId", "suiteId", "environment", "status", "total", "passed", "failed", "durationSec", "startedAt", "triggeredBy", "browser", "progress", "orgId"],
+  Issue: ["key", "title", "projectId", "runId", "severity", "status", "message", "stepsJson", "assignee", "createdAt", "updatedAt", "historyJson", "orgId"],
+  TestSpec: ["key", "projectId", "filename", "content", "baseURL", "updatedAt", "orgId"],
+  CaseResult: ["key", "runId", "projectId", "name", "status", "durationMs", "errorMessage", "sortOrder", "orgId"],
   UserPreference: ["key", "avatarFileId", "updatedAt"]
 };
 
@@ -254,6 +254,53 @@ function iso(timestamp: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Organization scoping
+// ---------------------------------------------------------------------------
+// The gateway is TENANT-scoped: every organization in the tenant reads the
+// same rows and a record carries no org dimension of its own. The active org
+// id is held here, stamped onto every domain write and matched on every
+// domain read. AuthProvider keeps it synced from the session claims and the
+// OrgSwitcher sets it before a switch's reload, so the load only ever sees
+// the active org's rows. Rows without an orgId predate scoping -- they count
+// as Default-org data and stay visible only while the Default org is active.
+let activeOrgId = "default";
+let orgChangeHandlers: (() => void)[] = [];
+
+function normalizeOrgId(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "default";
+}
+
+/** Re-scope every domain read/write to an org. Returns whether the scope
+ *  actually changed; a change notifies subscribers (the demo store resets
+ *  itself on one, clearing the previous org's rows). */
+export function setDataOrgId(orgId: string | undefined): boolean {
+  const next = normalizeOrgId(orgId);
+  if (next === activeOrgId) return false;
+  activeOrgId = next;
+  for (const handler of [...orgChangeHandlers]) handler();
+  return true;
+}
+
+/** Subscribe to active-org changes; returns the unsubscribe function. */
+export function onActiveOrgChange(handler: () => void): () => void {
+  orgChangeHandlers.push(handler);
+  return () => {
+    orgChangeHandlers = orgChangeHandlers.filter((entry) => entry !== handler);
+  };
+}
+
+/** Rows without orgId predate scoping -- Default-org data only. */
+function recordMatchesActiveOrg(record: DataRecord): boolean {
+  const org = asString(record.orgId);
+  return org ? org === activeOrgId : activeOrgId === "default";
+}
+
+/** Stamp the active org onto a record about to be written. */
+function withOrgTag(record: DataRecord): DataRecord {
+  return { ...record, orgId: activeOrgId };
+}
+
+// ---------------------------------------------------------------------------
 // Record <-> app-type mapping
 // ---------------------------------------------------------------------------
 function fromProjectRecord(record: DataRecord): Project {
@@ -268,14 +315,14 @@ function fromProjectRecord(record: DataRecord): Project {
 }
 
 function toProjectRecord(project: Project): DataRecord {
-  return {
+  return withOrgTag({
     key: project.id,
     name: project.name,
     description: project.description,
     icon: project.icon,
     tagsJson: JSON.stringify(project.tags),
     createdAt: iso(project.createdAt)
-  };
+  });
 }
 
 function fromSuiteRecord(record: DataRecord): Suite {
@@ -291,7 +338,7 @@ function fromSuiteRecord(record: DataRecord): Suite {
 }
 
 function toSuiteRecord(suite: Suite): DataRecord {
-  return {
+  return withOrgTag({
     key: suite.id,
     projectId: suite.projectId,
     name: suite.name,
@@ -299,7 +346,7 @@ function toSuiteRecord(suite: Suite): DataRecord {
     status: suite.status,
     owner: suite.owner,
     lastUpdatedAt: iso(suite.lastUpdatedAt)
-  };
+  });
 }
 
 function fromRunRecord(record: DataRecord): Run {
@@ -332,7 +379,7 @@ function toRunRecord(run: Run): DataRecord {
   // not exist on RunInsertInput") — sending it failed every runner-run
   // create silently, losing the record. runTrigger() reconstructs the
   // trigger from the id prefix / actor when the row is read back.
-  return {
+  return withOrgTag({
     key: run.id,
     name: run.name,
     projectId: run.projectId,
@@ -347,7 +394,7 @@ function toRunRecord(run: Run): DataRecord {
     triggeredBy: run.triggeredBy,
     browser: run.browser,
     ...(run.progress !== undefined ? { progress: run.progress } : {})
-  };
+  });
 }
 
 function fromIssueRecord(record: DataRecord): Issue {
@@ -373,7 +420,7 @@ function fromIssueRecord(record: DataRecord): Issue {
 }
 
 function toIssueRecord(issue: Issue): DataRecord {
-  return {
+  return withOrgTag({
     key: issue.id,
     title: issue.title,
     projectId: issue.projectId,
@@ -386,7 +433,7 @@ function toIssueRecord(issue: Issue): DataRecord {
     createdAt: iso(issue.createdAt),
     updatedAt: iso(issue.updatedAt),
     historyJson: JSON.stringify(issue.history)
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -437,12 +484,18 @@ async function listAllRecords(schema: SchemaName): Promise<DataRecord[]> {
 export type DomainSnapshot = { projects: Project[]; suites: Suite[]; runs: Run[]; issues: Issue[] };
 
 async function listDomain(): Promise<DomainSnapshot> {
-  const [projectRecords, suiteRecords, runRecords, issueRecords] = await Promise.all([
+  const [allProjects, allSuites, allRuns, allIssues] = await Promise.all([
     listRecords("Project"),
     listRecords("Suite"),
     listRecords("Run"),
     listRecords("Issue")
   ]);
+  // Org scope: rows tagged for another organization never enter the
+  // snapshot, and legacy untagged rows surface only under the Default org.
+  const projectRecords = allProjects.filter(recordMatchesActiveOrg);
+  const suiteRecords = allSuites.filter(recordMatchesActiveOrg);
+  const runRecords = allRuns.filter(recordMatchesActiveOrg);
+  const issueRecords = allIssues.filter(recordMatchesActiveOrg);
   const projects: Project[] = [];
   for (const record of projectRecords) {
     const project = fromProjectRecord(record);
@@ -488,7 +541,7 @@ export async function loadDomain(): Promise<DomainSnapshot> {
  *  collection while hunting for a run another browser dispatched; a full
  *  loadDomain every poll would be four collections for one check. */
 export async function listRunRecords(): Promise<Run[]> {
-  const runRecords = await listRecords("Run");
+  const runRecords = (await listRecords("Run")).filter(recordMatchesActiveOrg);
   const runs: Run[] = [];
   for (const record of runRecords) {
     const run = fromRunRecord(record);
@@ -574,7 +627,7 @@ export async function createProjectRecord(project: Project): Promise<void> {
 export async function updateProjectRecord(project: Project): Promise<void> {
   const records = await listAllRecords("Project");
   const ids = records
-    .filter((record) => asString(record.key) === project.id)
+    .filter((record) => asString(record.key) === project.id && recordMatchesActiveOrg(record))
     .map(recordItemId)
     .filter((id): id is string => Boolean(id));
   for (const itemId of ids) {
@@ -661,7 +714,11 @@ export async function deleteProjectRecord(projectId: string): Promise<void> {
   }
 }
 
-/** Settings > Danger zone: wipe every domain record so a fresh seed starts. */
+/**
+ * Settings > Danger zone: wipe every domain record OF THE ACTIVE ORG so a
+ * fresh start begins there -- other organizations' rows are tenant siblings
+ * and must survive a reset that was issued from a different one.
+ */
 export async function deleteAllDomain(): Promise<void> {
   for (const schema of SCHEMAS) {
     // List-and-delete in passes: listRecords reads at most
@@ -670,7 +727,7 @@ export async function deleteAllDomain(): Promise<void> {
     // thousands of runs) -- repeat until the list comes back empty.
     try {
       for (let pass = 0; pass < 50; pass++) {
-        const records = await listRecords(schema);
+        const records = (await listRecords(schema)).filter(recordMatchesActiveOrg);
         if (records.length === 0) break;
         const ids = records.map(recordItemId).filter((id): id is string => Boolean(id));
         for (let offset = 0; offset < ids.length; offset += DELETE_CHUNK) {
@@ -710,6 +767,7 @@ export async function loadTestWorkspace(projectId: string): Promise<StoredWorksp
   const seenPaths = new Set<string>();
   let baseURL = "";
   for (const record of records) {
+    if (!recordMatchesActiveOrg(record)) continue;
     if (asString(record.projectId) !== projectId) continue;
     if (asString(record.key) === settingsKeyOf(projectId)) {
       baseURL = parseWorkspaceSettings(asString(record.content)).baseURL ?? "";
@@ -728,14 +786,14 @@ export async function loadTestWorkspace(projectId: string): Promise<StoredWorksp
 
 export async function saveTestFile(input: { projectId: string; path: string; content: string }): Promise<void> {
   const key = fileKeyOf(input.projectId, input.path);
-  const payload: DataRecord = {
+  const payload: DataRecord = withOrgTag({
     key,
     projectId: input.projectId,
     filename: input.path,
     content: input.content,
     baseURL: "",
     updatedAt: iso(Date.now())
-  };
+  });
   // Update by remembered ItemId, else find it by key or v1 filename match
   // (which also upgrades a legacy record to the new key); create when absent.
   let itemId = itemIds.TestSpec.get(key);
@@ -743,6 +801,7 @@ export async function saveTestFile(input: { projectId: string; path: string; con
     const records = await listRecords("TestSpec");
     itemId = records
       .filter((record) =>
+        recordMatchesActiveOrg(record) &&
         asString(record.projectId) === input.projectId &&
         (asString(record.key) === key || (asString(record.key) === input.projectId && asString(record.filename) === input.path)))
       .map(recordItemId)
@@ -771,6 +830,7 @@ export async function deleteTestFile(input: { projectId: string; path: string })
     const records = await listRecords("TestSpec");
     itemId = records
       .filter((record) =>
+        recordMatchesActiveOrg(record) &&
         asString(record.projectId) === input.projectId &&
         (asString(record.key) === key || (asString(record.key) === input.projectId && asString(record.filename) === input.path)))
       .map(recordItemId)
@@ -808,7 +868,7 @@ function parseWorkspaceSettings(content: string): WorkspaceSettings {
  *  runner binding) so one writer never clobbers another. */
 export async function saveWorkspaceSettings(input: { projectId: string } & WorkspaceSettings): Promise<void> {
   const records = await listRecords("TestSpec");
-  const existing = records.find((record) => asString(record.key) === settingsKeyOf(input.projectId));
+  const existing = records.find((record) => recordMatchesActiveOrg(record) && asString(record.key) === settingsKeyOf(input.projectId));
   const current = parseWorkspaceSettings(existing ? asString(existing.content) : "");
   const { projectId, ...patch } = input;
   await saveTestFile({ projectId, path: SETTINGS_PATH, content: JSON.stringify({ ...current, ...patch }) });
@@ -816,7 +876,7 @@ export async function saveWorkspaceSettings(input: { projectId: string } & Works
 
 export async function loadWorkspaceSettings(projectId: string): Promise<WorkspaceSettings | null> {
   const records = await listRecords("TestSpec");
-  const record = records.find((entry) => asString(entry.key) === settingsKeyOf(projectId));
+  const record = records.find((entry) => recordMatchesActiveOrg(entry) && asString(entry.key) === settingsKeyOf(projectId));
   if (!record) return null;
   const settings = parseWorkspaceSettings(asString(record.content));
   return Object.keys(settings).length > 0 ? settings : null;
@@ -858,7 +918,7 @@ export async function replaceTestFiles(input: {
   // them one by one. For an empty workspace this is a single list call.
   const existing = await listRecords("TestSpec", specs);
   const staleIds = existing
-    .filter((record) => asString(record.projectId) === input.projectId)
+    .filter((record) => recordMatchesActiveOrg(record) && asString(record.projectId) === input.projectId)
     .map(recordItemId)
     .filter((id): id is string => Boolean(id));
   for (const id of staleIds) {
@@ -873,14 +933,14 @@ export async function replaceTestFiles(input: {
   let created = 0;
   for (const file of files) {
     const key = fileKeyOf(input.projectId, file.path);
-    const data = assertGateway(await specs.create({
+    const data = assertGateway(await specs.create(withOrgTag({
       key,
       projectId: input.projectId,
       filename: file.path,
       content: file.content,
       baseURL: "",
       updatedAt: iso(Date.now())
-    }), `Insert TestSpec ${file.path}`);
+    })), `Insert TestSpec ${file.path}`);
     const result = data.insertTestSpec as { itemId?: unknown } | null | undefined;
     const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
     if (itemId) itemIds.TestSpec.set(key, itemId);
@@ -917,7 +977,7 @@ let caseDetailPersist = true;
 export async function createCaseRecords(runId: string, projectId: string, cases: StoredCase[]): Promise<void> {
   for (let offset = 0; offset < cases.length; offset += CREATE_BATCH) {
     await Promise.all(cases.slice(offset, offset + CREATE_BATCH).map(async (entry) => {
-      const base: DataRecord = {
+      const base: DataRecord = withOrgTag({
         key: entry.id,
         runId,
         projectId,
@@ -926,7 +986,7 @@ export async function createCaseRecords(runId: string, projectId: string, cases:
         durationMs: entry.durationMs,
         errorMessage: entry.error,
         sortOrder: entry.order
-      };
+      });
       if (caseDetailPersist && (entry.file || entry.steps?.length)) {
         try {
           await assertGateway(await collections.CaseResult.create({
@@ -948,7 +1008,7 @@ export async function createCaseRecords(runId: string, projectId: string, cases:
 
 /** Every persisted case row; the store groups them by run for the run pages. */
 export async function listCaseRecords(): Promise<StoredCase[]> {
-  const records = await listRecords("CaseResult");
+  const records = (await listRecords("CaseResult")).filter(recordMatchesActiveOrg);
   return records.map((record, index) => {
     const steps = asJson<CaseStep[]>(record.stepsJson, []);
     return {

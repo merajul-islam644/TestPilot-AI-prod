@@ -155,6 +155,23 @@ export function reloadDomain(): Promise<void> {
   return refresh();
 }
 
+/**
+ * Org switch: the module catalogs still hold the previous org's rows and
+ * refreshStarted would block the reload — clear both, drop to loading, and
+ * let the next render kick refresh against the new org's scope. data.ts
+ * fires this through onActiveOrgChange whenever the active org changes, so
+ * both the OrgSwitcher and the AuthProvider claim sync land here.
+ */
+export function resetForOrgSwitch(): void {
+  refreshStarted = false;
+  fillCatalog(projects, []);
+  fillCatalog(suites, []);
+  emit({ status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null });
+}
+// The store owns the reset side of org scoping (data.ts never imports this
+// module's state, so the notification flows through the callback above).
+cloud.onActiveOrgChange(resetForOrgSwitch);
+
 /** Catalog arrays are imported across the app, so they are refilled in place. */
 function fillCatalog<T>(catalog: T[], next: T[]) {
   catalog.length = 0;

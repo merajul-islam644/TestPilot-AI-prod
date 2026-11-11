@@ -20,8 +20,13 @@ const queryClient = new QueryClient({
     // state). Surface one calm toast; the fixed id stacks failures into a
     // single toast instead of one per component. Mutations keep their own
     // per-action toasts and never reach this handler.
-    onError: (error) => {
+    onError: (error, query) => {
       console.error("[TestPilot] Query failed:", error);
+      // Queries flagged meta.silent own their failure UI — e.g. the avatar
+      // read, whose initials fallback IS the graceful failure (a 403 from a
+      // role that can't read the storage file in another org must not toast
+      // on every org switch). Only unflagged failures surface here.
+      if (query.meta?.silent === true) return;
       toast.error(translate("toast.queryFailed"), { id: "query-failed" });
     }
   })
