@@ -76,6 +76,11 @@ function persistSession(): void {
     localStorage.setItem(
       `${SESSION_STORAGE_KEY}:${sessionKey}`,
       JSON.stringify({
+        // The active sidebar view + visibility ride along: a refresh must
+        // land back in Source Control if that's where the user was, not
+        // default to Explorer (VS Code restores the view per workspace).
+        sidebarView: state.sidebarView,
+        sidebarVisible: state.sidebarVisible,
         openTabs: state.openTabs,
         activePath: state.activePath,
         expanded: state.expanded,
@@ -97,6 +102,8 @@ function persistSession(): void {
 
 /** Only these fields survive a reload; skip writes for pure chrome changes. */
 const SESSION_FIELDS: (keyof WorkbenchState)[] = [
+  "sidebarView",
+  "sidebarVisible",
   "openTabs",
   "activePath",
   "expanded",
@@ -204,6 +211,11 @@ export const workbenchStore = {
       saved = null;
     }
     set({
+      sidebarView:
+        saved?.sidebarView === "explorer" || saved?.sidebarView === "search" || saved?.sidebarView === "scm" || saved?.sidebarView === "run"
+          ? saved.sidebarView
+          : "explorer",
+      sidebarVisible: typeof saved?.sidebarVisible === "boolean" ? saved.sidebarVisible : true,
       openTabs: Array.isArray(saved?.openTabs) ? saved.openTabs.filter((p): p is string => typeof p === "string") : [],
       activePath: typeof saved?.activePath === "string" ? saved.activePath : "",
       diffTabs: [],
