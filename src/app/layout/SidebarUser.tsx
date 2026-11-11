@@ -13,7 +13,8 @@ import {
   DropdownMenuTrigger
 } from "../../shared/ui/dropdown-menu";
 
-/** Sidebar-bottom identity block: avatar, name, role, and the account menu. */
+/** Sidebar-bottom identity block: avatar, name, role, and the account menu.
+ *  (Org switching lives in the topbar's OrgSwitcher.) */
 export function SidebarUser({ collapsed, onNavigate }: { collapsed: boolean; onNavigate: (path: string) => void }) {
   const { logout } = useAuth();
   const { t } = useT();

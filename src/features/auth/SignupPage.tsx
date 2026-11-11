@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { signup } from "../../lib/blocks/auth";
+import { useSignupSettings } from "../organizations/useOrganizationsAdmin";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { Alert } from "../../shared/ui/Alert";
 import { AuthLinks, AuthShell } from "./AuthShell";
@@ -7,9 +8,19 @@ import { AuthLinks, AuthShell } from "./AuthShell";
 /** Public self-signup. IAM owns account-creation rules (duplicate email,
  *  password policy, tenant signup policy) — its response/errors surface
  *  as-is; success routes to activation, which the confirmation email
- *  drives. */
+ *  drives. The public signup policy is read first: when the tenant turned
+ *  email+password signup off, the form yields to a notice. A failed policy
+ *  read falls OPEN (same rule as login options) — a broken call must never
+ *  hide the form. */
 export function SignupPage({ onNavigate }: { onNavigate: (path: string) => void }) {
   const { t } = useT();
+  const policy = useSignupSettings();
+  // Both switches matter: the tenant master (`isSignUpEnable`) and the
+  // email+password method (`isEmailPasswordSignUpEnabled`) — this form only
+  // covers the email+password path.
+  const signupClosed = policy.settings
+    ? !policy.settings.isSignUpEnable || !policy.settings.isEmailPasswordSignUpEnabled
+    : false;
   const [email, setEmail] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -47,6 +58,8 @@ export function SignupPage({ onNavigate }: { onNavigate: (path: string) => void 
     <AuthShell subtitle={t("auth.signupSubtitle")} title={t("auth.signupTitle")}>
       {done ? (
         <Alert tone="info">{t("auth.signupDone")}</Alert>
+      ) : signupClosed ? (
+        <Alert tone="info">{t("auth.signupDisabled")}</Alert>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
           {error ? <Alert tone="error">{error}</Alert> : null}

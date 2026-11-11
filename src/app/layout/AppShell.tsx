@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { primaryNavItems, secondaryNavItems } from "./navItems";
 import { NotificationsMenu } from "./NotificationsMenu";
+import { OrgSwitcher } from "./OrgSwitcher";
 import { SidebarUser } from "./SidebarUser";
 import { ShellContext } from "./ShellContext";
 import { ThemeToggle } from "./ThemeToggle";
@@ -149,6 +150,7 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
               </button>
             ) : null}
             <div className="topbar-spacer" />
+            <OrgSwitcher />
             <NotificationsMenu />
             <ThemeToggle />
             <LanguageSwitcher />

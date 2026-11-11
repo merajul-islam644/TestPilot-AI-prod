@@ -845,3 +845,15 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .manual-secret-row code { background: hsl(var(--secondary)); border-radius: 4px; font-size: 13px; overflow-wrap: anywhere; padding: 4px 8px; word-break: break-all; }
 .backup-codes-grid { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 .backup-codes-grid code { background: hsl(var(--secondary)); border-radius: 4px; font-size: 13.5px; letter-spacing: 1px; padding: 6px 8px; text-align: center; }
+.org-policy-panel { margin-top: 22px; }
+/* Topbar org switcher: a compact chip naming the active org. Icon-only on
+   narrow screens, where the name would crowd the topbar. */
+.org-switcher {
+  align-items: center; background: transparent; border: 1px solid hsl(var(--border)); border-radius: 8px;
+  color: hsl(var(--foreground)); cursor: pointer; display: inline-flex; flex-shrink: 0; gap: 7px;
+  font: inherit; font-size: 13px; min-height: 34px; padding: 0 10px;
+}
+.org-switcher:hover:not(:disabled) { background: hsl(var(--secondary)); color: hsl(var(--high-emphasis)); }
+.org-switcher:disabled { cursor: not-allowed; opacity: 0.5; }
+.org-switcher span { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 880px) { .org-switcher span { display: none; } }

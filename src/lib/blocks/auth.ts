@@ -198,6 +198,21 @@ export async function logout(): Promise<void> {
   clearLocalTokens();
 }
 
+// --- Active-organization switch ----------------------------------------------
+// Switching org context re-issues the session for the chosen organization:
+// IAM reads the refresh token from the session cookie (never the body) and
+// answers with a fresh BlocksAuthResponse whose Set-Cookie IS the new session
+// in the default flow. Body tokens only appear in non-default OIDC configs —
+// persist them exactly like completeLogin does. The CALLER must then drop
+// every cached IAM query and refetch claims, or the UI keeps showing the
+// previous org's data with the new session silently in place.
+
+export async function switchOrganization(organizationId: string): Promise<void> {
+  const data = await blocksClient.auth.switchOrganization({ organizationId });
+  const accessToken = data.access_token ?? data.accessToken;
+  if (accessToken) persistTokens(accessToken, data.refresh_token ?? data.refreshToken);
+}
+
 // --- Account self-service ----------------------------------------------------
 // The public and signed-in IAM account calls (signup, activation, recovery,
 // password, sessions, login discovery). Every request shape is IAM's

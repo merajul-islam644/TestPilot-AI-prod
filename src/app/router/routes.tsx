@@ -27,6 +27,7 @@ import { HelpPage } from "../../features/help/HelpPage";
 import { ProfilePage } from "../../features/profile/ProfilePage";
 import { UsersPage } from "../../features/users/UsersPage";
 import { RolesPage } from "../../features/roles/RolesPage";
+import { OrganizationsPage } from "../../features/organizations/OrganizationsPage";
 
 type RouteDef = { component: ComponentType; params: string[]; segments: string[] };
 
@@ -45,6 +46,7 @@ const routes: RouteDef[] = [
   { component: SettingsPage, params: [], segments: ["settings"] },
   { component: UsersPage, params: [], segments: ["users"] },
   { component: RolesPage, params: [], segments: ["roles"] },
+  { component: OrganizationsPage, params: [], segments: ["organizations"] },
   { component: HelpPage, params: [], segments: ["help"] },
   { component: ProfilePage, params: [], segments: ["profile"] },
   { component: ErrorPage, params: [], segments: ["error"] }
