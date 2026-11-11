@@ -25,6 +25,7 @@ import { ReportsPage } from "../../features/reports/ReportsPage";
 import { SettingsPage } from "../../features/settings/SettingsPage";
 import { HelpPage } from "../../features/help/HelpPage";
 import { ProfilePage } from "../../features/profile/ProfilePage";
+import { UsersPage } from "../../features/users/UsersPage";
 
 type RouteDef = { component: ComponentType; params: string[]; segments: string[] };
 
@@ -41,6 +42,7 @@ const routes: RouteDef[] = [
   { component: IssueDetailPage, params: ["issueId"], segments: ["issues", ":issueId"] },
   { component: ReportsPage, params: [], segments: ["reports"] },
   { component: SettingsPage, params: [], segments: ["settings"] },
+  { component: UsersPage, params: [], segments: ["users"] },
   { component: HelpPage, params: [], segments: ["help"] },
   { component: ProfilePage, params: [], segments: ["profile"] },
   { component: ErrorPage, params: [], segments: ["error"] }

@@ -787,3 +787,24 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .help-status-row + .help-status-row { border-top: 1px solid hsl(var(--border)); }
 .help-status-row .muted { font-size: 13px; }
 .danger-zone { border-color: hsl(var(--destructive) / 0.35); }
+
+/* ============================================================
+   Users admin (list toolbar extras, role picker, access dialog)
+   ============================================================ */
+.field-hint.is-error { color: hsl(var(--destructive)); }
+.field-hint.is-good { color: hsl(var(--success)); }
+.user-name { align-items: center; display: inline-flex; font-weight: 600; gap: 8px; }
+.user-name .chip { font-size: 11px; font-weight: 500; }
+/* The assignable-roles checkbox list inside the invite/access dialogs: a
+   bounded scroll area so a tenant with many roles can't blow the modal up. */
+.role-picker { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); display: grid; gap: 2px; max-height: 190px; overflow: auto; padding: 6px; }
+.role-option { align-items: center; border-radius: 7px; cursor: pointer; display: flex; gap: 9px; padding: 5px 8px; transition: background-color 0.12s ease; }
+.role-option:hover { background: hsl(var(--secondary) / 0.6); }
+.role-option input { accent-color: hsl(var(--primary)); }
+.role-slug { font-size: 11.5px; margin-left: auto; }
+.access-current { margin: 0; }
+/* Permission picker inside the access dialog: its own search box above the
+   checkbox list; slugs are long, so they truncate instead of wrapping. */
+.permission-search { max-width: none; }
+.permission-slug { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.permission-empty { padding: 8px 10px; }
