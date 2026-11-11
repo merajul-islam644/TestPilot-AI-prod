@@ -827,3 +827,21 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .diagnosis-missing { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); }
 .diagnosis-deps { font-size: 12px; }
 
+
+/* --- MFA (Settings > Security) ----------------------------------------------- */
+.chip-good { background: hsl(var(--success-bg)); color: hsl(var(--success-fg)); }
+.chip-toggle { border: 1px solid transparent; cursor: pointer; font: inherit; }
+.chip-toggle.chip-on { border-color: hsl(var(--primary)); color: hsl(var(--primary)); }
+.mfa-status-row { align-items: center; display: flex; gap: 10px; margin: 10px 0; }
+.mfa-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.mfa-policy-panel { margin-top: 22px; }
+.policy-editor { display: grid; gap: 16px; }
+.policy-methods { display: flex; gap: 18px; margin: 6px 0; }
+.policy-check { align-items: center; display: flex; gap: 8px; }
+.qr-box { background: #fff; border-radius: var(--radius); display: grid; justify-items: center; margin: 10px auto; max-width: 240px; padding: 12px; place-items: center; }
+.qr-box img { display: block; height: auto; max-width: 100%; }
+.manual-secret { margin-top: 8px; }
+.manual-secret-row { align-items: center; display: flex; gap: 8px; }
+.manual-secret-row code { background: hsl(var(--secondary)); border-radius: 4px; font-size: 13px; overflow-wrap: anywhere; padding: 4px 8px; word-break: break-all; }
+.backup-codes-grid { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.backup-codes-grid code { background: hsl(var(--secondary)); border-radius: 4px; font-size: 13.5px; letter-spacing: 1px; padding: 6px 8px; text-align: center; }

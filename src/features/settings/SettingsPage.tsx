@@ -13,19 +13,22 @@ import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
 import { Select } from "../../shared/ui/select";
 import { Switch } from "../../shared/ui/Switch";
+import { MfaPolicyAdmin } from "../mfa/MfaPolicyAdmin";
+import { MfaSection } from "../mfa/MfaSection";
 import { useCurrentUser, userDisplayName, userInitials } from "../profile/useCurrentUser";
 
-type Section = "general" | "workspace" | "profile" | "notifications" | "appearance";
+type Section = "general" | "workspace" | "profile" | "security" | "notifications" | "appearance";
 
 const SECTION_KEYS: Record<Section, TranslationKey> = {
   general: "settings.section.general",
   workspace: "settings.section.workspace",
   profile: "settings.section.profile",
+  security: "settings.section.security",
   notifications: "settings.section.notifications",
   appearance: "settings.section.appearance"
 };
 
-const SECTIONS: Section[] = ["general", "workspace", "profile", "notifications", "appearance"];
+const SECTIONS: Section[] = ["general", "workspace", "profile", "security", "notifications", "appearance"];
 
 const MEMBERS: { name: string; roleKey: TranslationKey }[] = [
   { name: "Maya Lindqvist", roleKey: "settings.role.owner" },
@@ -179,6 +182,13 @@ export function SettingsPage() {
                 </div>
               </div>
             </div>
+          ) : null}
+
+          {section === "security" ? (
+            <>
+              <MfaSection />
+              <MfaPolicyAdmin />
+            </>
           ) : null}
 
           {section === "notifications" ? (
