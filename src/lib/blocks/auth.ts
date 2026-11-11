@@ -197,3 +197,62 @@ export async function logout(): Promise<void> {
   await blocksClient.auth.logout({ refreshToken: getRefreshToken() }).catch(() => undefined);
   clearLocalTokens();
 }
+
+// --- Account self-service ----------------------------------------------------
+// The public and signed-in IAM account calls (signup, activation, recovery,
+// password, sessions, login discovery). Every request shape is IAM's
+// contract -- the SDK types these as Record passthrough -- so these wrappers
+// pin the well-known fields and each page renders IAM's own response/errors
+// rather than pre-validating anything.
+
+/** Which login methods the tenant supports (password, social, …). Public.
+ *  LoginPage consults it before rendering its self-service links so it only
+ *  offers what IAM actually accepts. */
+export function fetchLoginOptions(): Promise<Record<string, unknown>[]> {
+  return blocksClient.auth.loginOptions();
+}
+
+/** Public: register a new account. IAM owns account-creation rules (duplicate
+ *  email, password policy) — its response/errors surface as-is. */
+export function signup(request: Record<string, unknown>) {
+  return blocksClient.auth.signup(request);
+}
+
+/** Public: check an activation code BEFORE showing the final "set your
+ *  password" step, so a dead/expired link fails fast with a clear message. */
+export function validateActivation(request: Record<string, unknown>) {
+  return blocksClient.auth.validateActivation(request);
+}
+
+/** Public: complete an invited account's setup — the emailed code is the
+ *  credential, plus the new password (and optional profile names). */
+export function activateAccount(request: Record<string, unknown>) {
+  return blocksClient.auth.activate(request);
+}
+
+/** Public: send a fresh activation code/link when the emailed one expired. */
+export function resendActivation(request: Record<string, unknown>) {
+  return blocksClient.auth.resendActivation(request);
+}
+
+/** Public "forgot password": triggers IAM's recovery email. */
+export function recoverPassword(request: Record<string, unknown>) {
+  return blocksClient.auth.recover(request);
+}
+
+/** Public: completes recovery — the emailed reset code plus the new password.
+ *  IAM validates the token and enforces the password policy. */
+export function resetPassword(request: Record<string, unknown>) {
+  return blocksClient.auth.resetPassword(request);
+}
+
+/** Signed-in: the account-settings "change my password" action. */
+export function changePassword(request: Record<string, unknown>) {
+  return blocksClient.auth.changePassword(request);
+}
+
+/** Signed-in: "sign out everywhere" — invalidates every session the account
+ *  holds, not just the calling one. */
+export function logoutAllDevices(): Promise<Record<string, unknown>> {
+  return blocksClient.auth.logoutAll({});
+}

@@ -8,6 +8,10 @@ import { CallbackPage } from "../../features/auth/CallbackPage";
 import { ErrorPage } from "../../features/auth/ErrorPage";
 import { LoginPage } from "../../features/auth/LoginPage";
 import { NotFoundPage } from "../../features/auth/NotFoundPage";
+import { ActivateAccountPage } from "../../features/auth/ActivateAccountPage";
+import { ForgotPasswordPage } from "../../features/auth/ForgotPasswordPage";
+import { ResetPasswordPage } from "../../features/auth/ResetPasswordPage";
+import { SignupPage } from "../../features/auth/SignupPage";
 import { OverviewPage } from "../../features/overview/OverviewPage";
 import { ProjectsPage } from "../../features/projects/ProjectsPage";
 import { ProjectDetailPage } from "../../features/projects/ProjectDetailPage";
@@ -91,10 +95,19 @@ export function AppRouter() {
     const returnTo = new URLSearchParams(search).get("returnTo") || undefined;
     return (
       <RedirectIfAuthenticated onNavigate={navigate}>
-        <LoginPage returnTo={returnTo} />
+        <LoginPage onNavigate={navigate} returnTo={returnTo} />
       </RedirectIfAuthenticated>
     );
   }
+
+  // Public account self-service flows — standalone screens like the login
+  // page, deliberately NOT guarded: they're reached from email links that
+  // may be clicked while another tab is still signed in, and the flows
+  // themselves are IAM-gated (each carries its own emailed credential).
+  if (path === "/forgot-password") return <ForgotPasswordPage onNavigate={navigate} />;
+  if (path === "/reset-password") return <ResetPasswordPage onNavigate={navigate} />;
+  if (path === "/activate") return <ActivateAccountPage onNavigate={navigate} />;
+  if (path === "/signup") return <SignupPage onNavigate={navigate} />;
 
   return (
     <RouteContext.Provider value={routeState}>

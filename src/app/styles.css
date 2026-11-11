@@ -414,6 +414,9 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .auth-card h2 { font-size: 20px; margin: 0; }
 .auth-card > p { color: hsl(var(--muted-foreground)); font-size: 14px; margin: 0; }
 .auth-submit { justify-content: center; width: 100%; }
+/* The self-service links row under an auth card: muted, centered, wraps
+   on narrow screens. link-button inside keeps the accent hover. */
+.auth-links { align-items: center; color: hsl(var(--muted-foreground)); display: flex; flex-wrap: wrap; font-size: 13px; gap: 4px 14px; justify-content: center; }
 
 /* ============================================================
    Alerts, toasts
