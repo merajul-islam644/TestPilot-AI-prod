@@ -60,7 +60,12 @@ export function useRolesPage(search: string) {
       );
   }, [query.data, search]);
 
-  return { ...query, roles };
+  // slug → row over the LOADED set; the hierarchy column resolves a parent
+  // slug to the parent role's display name with it (falls back to the raw
+  // slug when the parent isn't in the loaded page, e.g. mid-search).
+  const bySlug = useMemo(() => new Map(roles.map((role) => [role.slug, role])), [roles]);
+
+  return { ...query, bySlug, roles };
 }
 
 /** The permissions a role currently holds — the pre-checked set in the role

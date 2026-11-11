@@ -1,4 +1,4 @@
-import { KeyRound, Pencil, Plus, RefreshCw, Search, ShieldQuestion } from "lucide-react";
+import { CornerDownRight, KeyRound, Pencil, Plus, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { ActionButton } from "../../shared/ui/ActionButton";
@@ -38,26 +38,39 @@ export function RolesPage() {
       key: "name",
       render: (role) => (
         <span className="user-name">
-          {role.name}
+          <span className="user-name-text">{role.name}</span>
           <span className="chip">{role.slug}</span>
         </span>
       )
     },
     { header: t("roles.colDescription"), key: "description", render: (role) => <span className="muted">{role.description || "—"}</span> },
     {
-      header: t("roles.colParent"),
-      key: "parent",
-      render: (role) => <span className="muted">{role.parentRoleSlug ?? "—"}</span>
-    },
-    {
       header: t("roles.colPermissions"),
       key: "permissions",
       render: (role) => (role.permissionCount !== undefined ? String(role.permissionCount) : "—")
     },
     {
+      // One hierarchy cell instead of the old always-dash pair (parent role +
+      // assignable): names the parent role when there is one, says
+      // "Top-level" otherwise, and chips the sub-role capability.
       header: t("roles.colAssignable"),
-      key: "assignable",
-      render: (role) => (role.canCreateOwn ? t("roles.canCreateOwn") : "—")
+      key: "hierarchy",
+      render: (role) => {
+        const parent = role.parentRoleSlug ? (roles.bySlug.get(role.parentRoleSlug) ?? undefined) : undefined;
+        return (
+          <span className="role-hierarchy">
+            {parent ? (
+              <>
+                <CornerDownRight aria-hidden size={13} />
+                <span className="user-name-text">{parent.name}</span>
+              </>
+            ) : (
+              <span className="muted">{t("roles.topLevel")}</span>
+            )}
+            {role.canCreateOwn ? <span className="chip">{t("roles.canCreateOwn")}</span> : null}
+          </span>
+        );
+      }
     },
     {
       align: "end",
@@ -73,7 +86,7 @@ export function RolesPage() {
         </span>
       )
     }
-  ], [t]);
+  ], [t, roles.bySlug]);
 
   return (
     <section>

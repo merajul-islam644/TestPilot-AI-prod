@@ -390,12 +390,58 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .tabs-actions { align-items: center; align-self: center; display: flex; gap: 8px; margin-bottom: 6px; margin-left: auto; padding-left: 12px; }
 
 /* Settings: category rail + panel */
-.settings-grid { display: grid; gap: 20px; grid-template-columns: 200px minmax(0, 1fr); }
-.settings-nav { display: grid; gap: 2px; align-content: start; }
-.settings-nav button { background: transparent; border: 0; border-radius: var(--radius); color: hsl(var(--muted-foreground)); font-size: 13.5px; font-weight: 500; min-height: 36px; padding: 0 12px; text-align: left; transition: background-color 0.15s ease, color 0.15s ease; }
-.settings-nav button:hover { background: hsl(var(--secondary)); color: hsl(var(--high-emphasis)); }
-.settings-nav button.on { background: hsl(var(--primary) / 0.1); color: hsl(var(--primary)); font-weight: 600; }
-.settings-panel { display: grid; gap: 14px; max-width: 720px; }
+/* --- Settings shell: identity rail + section cards ------------------- */
+.settings-shell { align-items: start; display: grid; gap: 24px; grid-template-columns: 236px minmax(0, 1fr); }
+.settings-rail { display: grid; gap: 10px; position: sticky; top: 16px; }
+.settings-identity { align-items: center; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: flex; gap: 10px; padding: 12px; }
+.settings-identity-copy { min-width: 0; }
+.settings-identity-copy strong { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-identity-mail { color: hsl(var(--muted-foreground)); display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-rail-nav { display: grid; gap: 2px; }
+.settings-rail-nav button { align-items: center; background: transparent; border: 0; border-radius: var(--radius); color: hsl(var(--muted-foreground)); display: flex; gap: 10px; padding: 8px 10px; text-align: left; transition: background-color 0.15s ease, color 0.15s ease; width: 100%; }
+.settings-rail-nav button:hover { background: hsl(var(--secondary)); color: hsl(var(--high-emphasis)); }
+.settings-rail-nav button.on { background: hsl(var(--primary) / 0.08); color: hsl(var(--primary)); }
+.settings-rail-text { min-width: 0; }
+.settings-rail-label { display: block; font-size: 13.5px; font-weight: 500; }
+.settings-rail-nav button.on .settings-rail-label { font-weight: 650; }
+.settings-rail-desc { color: hsl(var(--muted-foreground)); display: block; font-size: 11.5px; margin-top: 1px; }
+.settings-content { display: grid; gap: 16px; }
+.settings-head { align-items: center; display: flex; gap: 12px; }
+.settings-head-icon { align-items: center; background: hsl(var(--primary) / 0.1); border-radius: 10px; color: hsl(var(--primary)); display: inline-flex; flex: none; height: 34px; justify-content: center; width: 34px; }
+.settings-head h3 { font-size: 16px; margin: 0; }
+.settings-head p { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 2px 0 0; }
+.settings-card { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: grid; overflow: hidden; }
+.settings-card-row { align-items: center; display: flex; gap: 16px; justify-content: space-between; padding: 14px 18px; }
+.settings-card-row + .settings-card-row { border-top: 1px solid hsl(var(--border)); }
+.settings-card-copy { min-width: 0; }
+.settings-card-copy strong { font-size: 13.5px; }
+.settings-card-copy p { color: hsl(var(--muted-foreground)); font-size: 12.5px; margin: 2px 0 0; }
+.settings-card-row-stack { align-items: stretch; flex-direction: column; }
+.settings-control { flex: none; }
+.settings-control input { width: 240px; }
+.settings-card-footer { align-items: center; border-top: 1px solid hsl(var(--border)); display: flex; gap: 12px; justify-content: flex-end; padding: 12px 18px; }
+.settings-card-footer .field-hint { color: hsl(var(--muted-foreground)); }
+/* Theme previews: mini chrome mockups so the choice is seen, not read.
+   Fixed colors inside the minis on purpose -- each one must look like the
+   theme it names even while the page itself is in the other theme. */
+.theme-previews { display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }
+.theme-preview { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); cursor: pointer; display: flex; flex-direction: column; gap: 8px; padding: 10px; position: relative; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.theme-preview:hover { border-color: hsl(var(--muted-foreground) / 0.5); }
+.theme-preview[aria-checked="true"] { border-color: hsl(var(--primary)); box-shadow: 0 0 0 1px hsl(var(--primary)); }
+.theme-preview-check { color: hsl(var(--primary)); position: absolute; right: 8px; top: 8px; }
+.theme-preview-label { color: hsl(var(--high-emphasis)); font-size: 12.5px; font-weight: 600; }
+.theme-preview-mini { border: 1px solid hsl(var(--border)); border-radius: 7px; display: flex; height: 44px; overflow: hidden; width: 100%; }
+.theme-half { display: flex; flex: 1; gap: 4px; padding: 6px; }
+.theme-half.is-light-half { background: #ffffff; }
+.theme-half.is-dark-half { background: #171921; }
+.theme-mini-side { border-radius: 2px; flex: none; width: 10px; }
+.theme-mini-line { border-radius: 2px; flex: 1; }
+.theme-half.is-light-half .theme-mini-side { background: #e3e5ea; }
+.theme-half.is-light-half .theme-mini-line { background: #edeff3; }
+.theme-half.is-light-half .theme-mini-line.is-accent { background: #3b82f6; }
+.theme-half.is-dark-half .theme-mini-side { background: #2a2d37; }
+.theme-half.is-dark-half .theme-mini-line { background: #23262f; }
+.theme-half.is-dark-half .theme-mini-line.is-accent { background: #3b82f6; }
 .settings-section h4 { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
 .settings-section > p { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 0 0 10px; }
 
@@ -652,7 +698,16 @@ pre { background: hsl(var(--high-emphasis)); border-radius: var(--radius); color
   .toolbar-actions { justify-content: flex-end; }
   .pagination { align-items: stretch; flex-direction: column; }
   .pagination-controls { justify-content: space-between; }
-  .settings-grid { grid-template-columns: 1fr; }
+  /* Settings collapses to a single column: the rail becomes a horizontal
+     scroll strip (icons + labels only), controls take the full row width. */
+  .settings-shell { grid-template-columns: 1fr; }
+  .settings-rail { position: static; }
+  .settings-rail-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  .settings-rail-nav button { flex: none; width: auto; }
+  .settings-rail-desc { display: none; }
+  .settings-control, .settings-control input { width: 100%; }
+  .settings-card-row { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .theme-previews { grid-template-columns: 1fr; }
   .modal-backdrop { padding: 0; }
   .modal { border-radius: 0; max-height: 100vh; max-width: 100vw; min-height: 100vh; }
 }
@@ -793,8 +848,16 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
    ============================================================ */
 .field-hint.is-error { color: hsl(var(--destructive)); }
 .field-hint.is-good { color: hsl(var(--success)); }
-.user-name { align-items: center; display: inline-flex; font-weight: 600; gap: 8px; }
+.user-name { align-items: center; display: inline-flex; flex-wrap: wrap; font-weight: 600; gap: 8px; }
 .user-name .chip { font-size: 11px; font-weight: 500; }
+/* The display name must never split mid-name when the cell is tight -- the
+   slug chip wraps below it instead ("System / User" read as two words). */
+.user-name-text { white-space: nowrap; }
+/* Roles table hierarchy cell: parent role name (or "Top-level") + the
+   sub-role capability chip, one quiet line instead of two dash columns. */
+.role-hierarchy { align-items: center; color: hsl(var(--muted-foreground)); display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.role-hierarchy svg { color: hsl(var(--muted-foreground)); flex: none; }
+.role-hierarchy .chip { font-size: 11px; font-weight: 500; }
 /* The assignable-roles checkbox list inside the invite/access dialogs: a
    bounded scroll area so a tenant with many roles can't blow the modal up. */
 .role-picker { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); display: grid; gap: 2px; max-height: 190px; overflow: auto; padding: 6px; }
