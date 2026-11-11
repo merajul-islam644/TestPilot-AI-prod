@@ -804,11 +804,20 @@ export function deleteProject(projectId: string): void {
     /* private mode — nothing to clean */
   }
   setWorkspaceInfo(projectId, null);
-  toast.success(translate("toast.projectDeleted"), { description: name });
-  void cloud.deleteProjectRecord(projectId).catch((error) => {
-    toast.error(translate("toast.syncFailed"), { description: name });
-    console.error("[TestPilot] Project delete failed:", error);
-  });
+  // The success toast waits for the gateway cascade to actually finish --
+  // firing it here would claim a deletion a fast refresh can disprove (the
+  // gateway rows outlive the optimistic list update for a few seconds).
+  void cloud.deleteProjectRecord(projectId)
+    .then(() => {
+      toast.success(translate("toast.projectDeleted"), { description: name });
+    })
+    .catch((error) => {
+      toast.error(translate("toast.syncFailed"), { description: name });
+      console.error("[TestPilot] Project delete failed:", error);
+      // The gateway kept the project -- re-hydrate so the list matches
+      // reality instead of hiding something that still exists.
+      void refresh();
+    });
 }
 
 /**

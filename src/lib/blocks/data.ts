@@ -645,17 +645,32 @@ export async function updateProjectRecord(project: Project): Promise<void> {
  */
 async function deleteManyMatching(schema: SchemaName, where: DataRecord, retryDelays: number[] = TRANSIENT_RETRY_DELAYS_MS): Promise<number> {
   const mutation = `deleteMany${schema}`;
+  // The gateway's *FilterInput leaves are HotChocolate operation objects: a
+  // bare string dies with "The syntax node `StringValue` is incompatible with
+  // the type `StringOperationFilterInput`" (verified live, 2026-11-11) -- each
+  // primitive leaf must be wrapped as { eq: value }. Non-primitives pass
+  // through untouched.
+  const filter = Object.fromEntries(
+    Object.entries(where).map(([field, value]) => [
+      field,
+      value !== null && typeof value === "object" ? value : { eq: value }
+    ])
+  );
   const data = assertGateway(await withTransientAuthRetry(`Bulk delete ${schema}`, () => blocksClient.data.graphql({
     operationName: mutation,
     query: `mutation ${mutation}($where: ${schema}FilterInput, $input: ${schema}DeleteInput) { ${mutation}(where: $where, input: $input) { acknowledged totalImpactedData } }`,
     // RunDeleteInput.isHardDelete (introspected) -- the flag is REQUIRED on
     // the bulk input, and it is spelled isHardDelete, not hardDelete.
-    variables: { where, input: { isHardDelete: true } }
+    variables: { where: filter, input: { isHardDelete: true } }
   }), retryDelays), `Bulk delete ${schema}`);
   const result = data[mutation] as { acknowledged?: unknown; totalImpactedData?: unknown } | null | undefined;
-  if (!result || result.acknowledged === false) {
-    throw new Error(`${mutation} was not acknowledged`);
+  if (!result) {
+    throw new Error(`${mutation} returned no result`);
   }
+  // acknowledged:false is NOT a failure -- the gateway pairs it with
+  // totalImpactedData 0 ("nothing matched", verified live); when rows really
+  // delete it answers acknowledged:true with the count. The impacted count
+  // is the signal the caller's loop runs on.
   // totalImpactedData is a GraphQL Long: JSON may deliver it as a string.
   const raw = result.totalImpactedData;
   const impacted = typeof raw === "number" ? raw : typeof raw === "string" && /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : 0;
@@ -682,33 +697,39 @@ async function deleteByRelist(schema: SchemaName, matches: (record: DataRecord) 
 }
 
 /**
- * Delete a project and everything hanging off it. Children go through the
- * bulk where-delete first -- a reseeded tenant can hold >1500 runs for one
- * key, and per-row chunk deletes at that scale take hundreds of gateway
- * calls (the original cleanup path timed out in exactly that trap). If the
- * gateway rejects the bulk DSL, the verified per-row passes still run, so a
- * delete never half-fails silently.
+ * Delete a project and everything hanging off it. The PROJECT row goes
+ * FIRST: the UI removes the project optimistically, and a refresh made
+ * while the cascade is still running re-hydrates from the gateway -- a
+ * surviving Project row is exactly the "deleted project came back" bug.
+ * Children follow through the bulk where-delete (a reseeded tenant can hold
+ * >1500 runs for one key, and per-row chunk deletes at that scale take
+ * hundreds of gateway calls), then a relist sweeper runs on every schema
+ * regardless of bulk outcome, catching anything the bulk pass left behind
+ * or skipped -- so a delete never half-fails silently.
  */
 export async function deleteProjectRecord(projectId: string): Promise<void> {
-  for (const schema of ["Suite", "Run", "Issue", "TestSpec", "CaseResult"] as SchemaName[]) {
+  const children = ["Suite", "Run", "Issue", "TestSpec", "CaseResult"] as SchemaName[];
+  try {
     try {
       for (let pass = 0; pass < 50; pass++) {
-        const impacted = await deleteManyMatching(schema, { projectId });
+        const impacted = await deleteManyMatching("Project", { key: projectId });
         if (impacted === 0) break;
       }
     } catch (bulkError) {
-      console.warn(`[TestPilot] Bulk delete ${schema} rejected, falling back to per-row deletes:`, bulkError);
+      console.warn("[TestPilot] Bulk delete Project rejected, falling back to per-row deletes:", bulkError);
+    }
+    await deleteByRelist("Project", (record) => asString(record.key) === projectId);
+    for (const schema of children) {
+      try {
+        for (let pass = 0; pass < 50; pass++) {
+          const impacted = await deleteManyMatching(schema, { projectId });
+          if (impacted === 0) break;
+        }
+      } catch (bulkError) {
+        console.warn(`[TestPilot] Bulk delete ${schema} rejected, falling back to per-row deletes:`, bulkError);
+      }
       await deleteByRelist(schema, (record) => asString(record.projectId) === projectId);
     }
-  }
-  try {
-    for (let pass = 0; pass < 50; pass++) {
-      const impacted = await deleteManyMatching("Project", { key: projectId });
-      if (impacted === 0) break;
-    }
-  } catch (bulkError) {
-    console.warn("[TestPilot] Bulk delete Project rejected, falling back to per-row deletes:", bulkError);
-    await deleteByRelist("Project", (record) => asString(record.key) === projectId);
   } finally {
     itemIds.Project.delete(projectId);
   }
