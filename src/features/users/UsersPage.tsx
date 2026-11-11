@@ -14,6 +14,7 @@ import { Select } from "../../shared/ui/select";
 import { StatusPill } from "../../shared/ui/StatusPill";
 import { AccessModal, ActivateUserModal, EditUserModal, InviteUserModal } from "./UserDialogs";
 import { useAssignableRoles, useOrganizations, useRoles, useUsersPage, userRoleSlugs, type UserRow } from "./useUsers";
+import { RequirePermission } from "../../shared/ui/RequirePermission";
 
 const PAGE_SIZES = [10, 20, 50];
 
@@ -142,19 +143,24 @@ export function UsersPage() {
       header: t("common.actions"),
       key: "actions",
       render: (user) => (
-        <span className="row-actions" onClick={(event) => event.stopPropagation()}>
-          <ActionButton icon={<ShieldCheck size={15} />} onClick={() => setManagingAccess(user)} title={t("users.accessAction")} variant="icon" />
-          <ActionButton icon={<Pencil size={15} />} onClick={() => setEditing(user)} title={t("users.editAction")} variant="icon" />
-          {user.active === false ? (
-            <ActionButton icon={<UserCheck size={15} />} onClick={() => setActivating(user)} title={t("users.activateAction")} variant="icon" />
-          ) : (
-            // Deactivating yourself would lock you out mid-session — keep the
-            // button off your own row; another admin can do it.
-            user.itemId === myId ? null : (
-              <ActionButton icon={<UserX size={15} />} onClick={() => setDeactivating(user)} title={t("users.deactivateAction")} variant="icon" />
-            )
-          )}
-        </span>
+        // Every action here is an IAM user mutation — one gate covers all of
+        // them ("Manage Users", blocks-iam::iam::mutate-users). Read-only page
+        // access is enforced server-side on the list call itself.
+        <RequirePermission permission="blocks-iam::iam::mutate-users">
+          <span className="row-actions" onClick={(event) => event.stopPropagation()}>
+            <ActionButton icon={<ShieldCheck size={15} />} onClick={() => setManagingAccess(user)} title={t("users.accessAction")} variant="icon" />
+            <ActionButton icon={<Pencil size={15} />} onClick={() => setEditing(user)} title={t("users.editAction")} variant="icon" />
+            {user.active === false ? (
+              <ActionButton icon={<UserCheck size={15} />} onClick={() => setActivating(user)} title={t("users.activateAction")} variant="icon" />
+            ) : (
+              // Deactivating yourself would lock you out mid-session — keep the
+              // button off your own row; another admin can do it.
+              user.itemId === myId ? null : (
+                <ActionButton icon={<UserX size={15} />} onClick={() => setDeactivating(user)} title={t("users.deactivateAction")} variant="icon" />
+              )
+            )}
+          </span>
+        </RequirePermission>
       )
     }
   ], [myId, t]);
@@ -165,9 +171,11 @@ export function UsersPage() {
         actions={(
           <>
             <ActionButton icon={<RefreshCw size={18} />} onClick={() => void users.refetch()} title={t("common.refresh")} variant="icon" />
-            <button className="primary-button" onClick={() => setInviteOpen(true)}>
-              <Plus size={16} /> {t("users.invite")}
-            </button>
+            <RequirePermission permission="blocks-iam::iam::mutate-users">
+              <button className="primary-button" onClick={() => setInviteOpen(true)}>
+                <Plus size={16} /> {t("users.invite")}
+              </button>
+            </RequirePermission>
           </>
         )}
         subtitle={t("users.subtitle")}
@@ -214,9 +222,11 @@ export function UsersPage() {
       {rows.length === 0 && !hasFilters && !users.isLoading ? (
         <EmptyState
           action={(
-            <button className="primary-button" onClick={() => setInviteOpen(true)}>
-              <Plus size={16} /> {t("users.invite")}
-            </button>
+            <RequirePermission permission="blocks-iam::iam::mutate-users">
+              <button className="primary-button" onClick={() => setInviteOpen(true)}>
+                <Plus size={16} /> {t("users.invite")}
+              </button>
+            </RequirePermission>
           )}
           description={t("users.subtitle")}
           title={t("users.empty")}

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { BlocksOrganization, BlocksPermission, BlocksRole, BlocksUser } from "@seliseblocks/client";
+import type { BlocksOrganization, BlocksRole, BlocksUser } from "@seliseblocks/client";
 import { useAuth } from "../../app/providers/AuthProvider";
 import {
   checkEmailAvailable,
@@ -162,7 +162,42 @@ export function useOrganizations() {
   return { ...query, organizations };
 }
 
-export type PermissionOption = { description: string; itemId: string; name: string; resource: string; slug: string };
+export type PermissionOption = {
+  description: string;
+  /** Resource strings this permission depends on — granting one without its
+   *  dependencies still 403s, so pickers surface them before save. */
+  dependentPermissions: string[];
+  itemId: string;
+  name: string;
+  resource: string;
+  slug: string;
+  /** IAM ResourceType: 1 = Endpoint (gateway-enforced 403), 2 = FrontendAction
+   *  (SPA gate — silently hidden UI), 0 = unset. */
+  type: number;
+};
+
+/** Maps a raw IAM permission record (loosely typed) to the picker option.
+ *  Assignment keys off the `resource` identifier (the `mod::area::action`
+ *  string — live-verified 2026-11-11; there is no separate slug field), with
+ *  `name` as the human label. itemId stays the last-resort fallback AND is
+ *  the value roles.assignPermissions actually takes. */
+export function permissionOption(record: Record<string, unknown>): PermissionOption | undefined {
+  const itemId = typeof record.itemId === "string" && record.itemId !== "" ? record.itemId : undefined;
+  if (!itemId) return undefined;
+  const slug = [record.slug, record.resource, record.key]
+    .find((value) => typeof value === "string" && value !== "");
+  return {
+    description: typeof record.description === "string" ? record.description : "",
+    dependentPermissions: Array.isArray(record.dependentPermissions)
+      ? record.dependentPermissions.filter((dep): dep is string => typeof dep === "string")
+      : [],
+    itemId,
+    name: typeof record.name === "string" ? record.name : "",
+    resource: typeof record.resource === "string" ? record.resource : "",
+    slug: typeof slug === "string" ? slug : itemId,
+    type: typeof record.type === "number" ? record.type : 0
+  };
+}
 
 export function usePermissions() {
   const { status: authStatus } = useAuth();
@@ -174,26 +209,10 @@ export function usePermissions() {
     staleTime: 5 * 60_000
   });
 
-  // Assignment keys off the `resource` identifier (the `mod::area::action`
-  // string — live-verified 2026-11-11; there is no separate slug field),
-  // with `name` as the human label. itemId stays the last-resort fallback.
-  const permissions = useMemo<PermissionOption[]>(() => {
-    const raw = query.data?.data ?? [];
-    return raw
-      .filter((perm): perm is BlocksPermission & { itemId: string } => typeof perm.itemId === "string" && perm.itemId !== "")
-      .map((perm) => {
-        const record = perm as Record<string, unknown>;
-        const slug = [record.slug, perm.resource, record.key]
-          .find((value) => typeof value === "string" && value !== "");
-        return {
-          description: typeof record.description === "string" ? record.description : "",
-          itemId: perm.itemId,
-          name: typeof record.name === "string" ? record.name : "",
-          resource: typeof perm.resource === "string" ? perm.resource : "",
-          slug: typeof slug === "string" ? slug : perm.itemId
-        };
-      });
-  }, [query.data]);
+  const permissions = useMemo<PermissionOption[]>(
+    () => (query.data?.data ?? []).map((perm) => permissionOption(perm as Record<string, unknown>)).filter((perm): perm is PermissionOption => Boolean(perm)),
+    [query.data]
+  );
 
   return { ...query, permissions };
 }

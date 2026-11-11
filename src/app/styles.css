@@ -808,3 +808,22 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .permission-search { max-width: none; }
 .permission-slug { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .permission-empty { padding: 8px 10px; }
+
+/* ============================================================
+   Roles admin (permission editor + 403 diagnosis)
+   ============================================================ */
+/* Search box + type filter side by side inside the permission modals. */
+.permission-toolbar { align-items: center; margin: 0 0 10px; }
+.permission-toolbar .permission-search { flex: 1; }
+/* The role permission editor reuses .role-picker but taller — 221 catalog
+   entries need more room than the invite dialog's few roles. */
+.permission-picker { max-height: 280px; }
+.diagnosis-list { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); display: grid; gap: 2px; max-height: 320px; overflow: auto; padding: 6px; }
+.diagnosis-row { align-items: center; border-radius: 7px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; padding: 7px 9px; }
+.diagnosis-row:hover { background: hsl(var(--secondary) / 0.5); }
+.diagnosis-main { align-items: center; display: flex; gap: 8px; min-width: 0; }
+.diagnosis-side { align-items: center; display: flex; gap: 10px; }
+.diagnosis-held { background: hsl(var(--success) / 0.12); color: hsl(var(--success)); }
+.diagnosis-missing { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); }
+.diagnosis-deps { font-size: 12px; }
+

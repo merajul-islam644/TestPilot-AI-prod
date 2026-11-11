@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Bug, ChartColumn, FolderKanban, Layers, LayoutDashboard, LifeBuoy, ListChecks, Settings, Users } from "lucide-react";
+import { Bug, ChartColumn, FolderKanban, KeyRound, Layers, LayoutDashboard, LifeBuoy, ListChecks, Settings, Users } from "lucide-react";
 import type { TranslationKey } from "../../lib/i18n/dictionary";
 
 export type NavItem = { href: string; icon: LucideIcon; labelKey: TranslationKey };
@@ -15,6 +15,7 @@ export const primaryNavItems: NavItem[] = [
 
 export const secondaryNavItems: NavItem[] = [
   { href: "/users", icon: Users, labelKey: "nav.users" },
+  { href: "/roles", icon: KeyRound, labelKey: "nav.roles" },
   { href: "/settings", icon: Settings, labelKey: "nav.settings" },
   { href: "/help", icon: LifeBuoy, labelKey: "nav.help" }
 ];
