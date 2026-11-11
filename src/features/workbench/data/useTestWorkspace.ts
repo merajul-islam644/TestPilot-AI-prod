@@ -60,7 +60,6 @@ import {
   isRunnableSpecPath,
   pathSkipReason
 } from "../../../lib/workspace/importFiles";
-import type { ImportReport } from "../../../lib/workspace/importFiles";
 import type { Project } from "../../../lib/demo/data";
 import { setWorkspaceInfo } from "../../../shared/workspaceRegistry";
 
@@ -231,12 +230,18 @@ export function useTestWorkspace(project: Project) {
   const [loaded, setLoaded] = useState(false);
   /** True while a folder is being opened (the tree list call). */
   const [opening, setOpening] = useState(false);
-  /** Live progress for applying a pull, surfaced in the explorer and the
-   *  status bar (null when idle). Folder opens no longer stream reads. */
-  const [importProgress, setImportProgress] = useState<cloud.ImportProgress | null>(null);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
-  const [pendingImport, setPendingImport] = useState<ImportReport | undefined>(undefined);
+  /** True while a local git op (pull/push/commit/checkout) is in flight —
+   *  the SCM chrome disables its actions, like VS Code's busy spinner. */
+  const [gitBusy, setGitBusy] = useState(false);
+  /** The open clone's current branch (null = no folder / not a repo / FSA). */
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  /** Bumped after each successful git mutation (commit/pull/push) so the
+   *  SCM panel re-reads branches + history — those deps don't change on
+   *  their own when the branch stays the same (commit on the same branch,
+   *  pull already-up-to-date, push with nothing new). */
+  const [gitTick, setGitTick] = useState(0);
   /** File or folder awaiting delete confirmation (explorer row). */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isFolder: boolean; count: number } | undefined>(undefined);
   /** A picked folder awaiting the "replace the open workspace?" confirm —
@@ -712,7 +717,6 @@ export function useTestWorkspace(project: Project) {
       return false;
     } finally {
       setOpening(false);
-      setImportProgress(null);
     }
   }
 
@@ -1231,68 +1235,157 @@ export function useTestWorkspace(project: Project) {
     });
   }
 
-  // ── Pull (Source Control) — writes the pulled files INTO the open folder ──
+  // ── Git (Source Control) — LOCAL git on the open clone, VS Code style ──
+  // Every op runs on the runner against the workspace's real clone; auth
+  // is the machine's own git credential helper, exactly like desktop VS
+  // Code. No token ever passes through the app.
 
-  /** Persist a staged pull report into the open folder on disk. Progress
-   *  streams to importProgress (the explorer/status bar UI is shared).
-   *  Written files arrive with content in hand, so they are recorded as
-   *  loaded — opening one costs no extra read. */
-  async function applyImport(): Promise<void> {
-    const report = pendingImport;
-    setPendingImport(undefined);
-    if (!report) return;
-    if (!root) {
-      toast.error("Open a folder first", { description: "Pulled files are written into the open workspace folder." });
+  /** The open clone's current branch, or null when root isn't a git
+   *  repository (or the workspace is a browser-FSA folder the runner
+   *  cannot see). Re-probed on every revision bump, so a pull or checkout
+   *  refreshes it together with the tree. */
+  useEffect(() => {
+    if (!root || fsaRoot) {
+      setGitBranch(null);
       return;
     }
-    setImportProgress({ phase: "writing", done: 0, total: report.files.length });
-    try {
-      const written = new Map<string, string>();
-      for (const file of report.files) {
-        await io.writeUserFile({ root, path: file.path, content: file.content });
-        written.set(file.path, file.content);
-        setImportProgress({ phase: "writing", done: written.size, total: report.files.length });
-      }
-      setPaths((prev) => {
-        const known = new Set(prev);
-        return [...prev, ...[...written.keys()].filter((path) => !known.has(path))];
+    let cancelled = false;
+    void localFolder.runGit({ root, op: "current-branch" })
+      .then((res) => {
+        if (cancelled) return;
+        setGitBranch(res.code === 0 ? res.stdout.trim() || null : null);
+      })
+      .catch(() => {
+        if (!cancelled) setGitBranch(null);
       });
-      setContents((prev) => ({ ...prev, ...Object.fromEntries(written) }));
-      setSavedContents((prev) => ({ ...prev, ...Object.fromEntries(written) }));
-      setGitBaselines((prev) => ({ ...prev, ...Object.fromEntries(written) }));
-      setRevision((value) => value + 1);
-      const skippedLine =
-        report.skipped.binaries + report.skipped.large + report.skipped.secrets + report.skipped.cap > 0
-          ? t("tests.importSkipped")
-              .replace("{binaries}", String(report.skipped.binaries))
-              .replace("{large}", String(report.skipped.large))
-              .replace("{secrets}", String(report.skipped.secrets))
-              .replace("{cap}", String(report.skipped.cap))
-          : report.rootFolder ? `${report.rootFolder}/` : "";
-      toast.success(t("tests.importDone"), { description: `${report.files.length} files written to disk${skippedLine ? ` · ${skippedLine}` : ""}` });
+    return () => { cancelled = true; };
+  }, [root, fsaRoot, revision]);
+
+  /** `git pull` on the open clone, then a full reload — a pull can add,
+   *  remove or rewrite many files at once, so re-walking the tree and
+   *  dropping the in-memory contents is the honest refresh (VS Code
+   *  updates the affected editors; ours reopens them from disk). */
+  async function pullWorkspace(): Promise<void> {
+    if (!root || fsaRoot) return;
+    setGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "pull" });
+      const out = (res.stderr || res.stdout).trim();
+      if (res.code !== 0) {
+        toast.error("Pull failed", { description: out.slice(0, 240) || `git pull exited with ${res.code}` });
+        return;
+      }
+      toast.success("Pull complete", {
+        description: /already up/i.test(out)
+          ? "Already up to date."
+          : out.split("\n").filter(Boolean).slice(0, 3).join(" · ").slice(0, 240)
+      });
+      await loadFolder(root, { announce: false });
+      setGitTick((tick) => tick + 1);
     } catch (error) {
-      console.warn("[TestPilot] Pull write failed:", error);
-      toast.error(t("tests.importFailed"));
+      toast.error("Pull failed", { description: error instanceof Error ? error.message : String(error) });
     } finally {
-      setImportProgress(null);
+      setGitBusy(false);
     }
   }
 
-  /** Stage a report from any source (GitHub pull) for the confirm dialog. */
-  function stageImport(report: ImportReport): void {
-    setPendingImport(report);
+  /** `git push` — sets the upstream on first push, like VS Code's
+   *  "publish branch" action. */
+  async function pushWorkspace(): Promise<void> {
+    if (!root || fsaRoot) return;
+    setGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "push" });
+      const out = (res.stderr || res.stdout).trim();
+      if (res.code !== 0) {
+        toast.error("Push failed", { description: out.slice(0, 240) || `git push exited with ${res.code}` });
+        return;
+      }
+      toast.success("Pushed", { description: `${gitBranch ?? "HEAD"} → origin` });
+      setGitTick((tick) => tick + 1);
+    } catch (error) {
+      toast.error("Push failed", { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setGitBusy(false);
+    }
   }
 
-  /** After a successful push: every committed file's SCM baseline moves
-   *  to the pushed content (VS Code's HEAD advancing to the new commit),
-   *  so the changes list empties until the next edit. The editor keeps
-   *  whatever was typed during the push — those strokes stay visible as
-   *  new changes — and the disk copy is refreshed to match. */
-  async function markCommitted(files: { path: string; content: string }[]): Promise<void> {
-    for (const file of files) {
-      if (!paths.includes(file.path)) continue;
-      setGitBaselines((prev) => ({ ...prev, [file.path]: file.content }));
-      await persistFile(file.path, false);
+  /** Commit the staged files as ONE local commit (`git commit -m msg --
+   *  paths`, so the commit carries exactly what the index UI showed).
+   *  Moving the SCM baselines afterwards empties the changes list, VS
+   *  Code style; pushing stays a separate action. */
+  async function commitWorkspace(staged: string[], message: string): Promise<boolean> {
+    if (!root || fsaRoot || staged.length === 0) return false;
+    setGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "commit", message, paths: staged });
+      if (res.code !== 0) {
+        toast.error("Commit failed", {
+          description: ((res.stderr || res.stdout).trim() || `git commit exited with ${res.code}`).slice(0, 240)
+        });
+        return false;
+      }
+      toast.success("Committed", { description: `${staged.length} file(s) · ${message.trim().slice(0, 80)}` });
+      for (const path of staged) {
+        if (!paths.includes(path)) continue;
+        setGitBaselines((prev) => ({ ...prev, [path]: contents[path] ?? "" }));
+      }
+      setGitTick((tick) => tick + 1);
+      return true;
+    } catch (error) {
+      toast.error("Commit failed", { description: error instanceof Error ? error.message : String(error) });
+      return false;
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  /** Switch the open clone's branch (`git checkout <name>`), then reload
+   *  the tree — a branch switch can rewrite every file on disk. A
+   *  remote-picked "origin/x" lands as a local tracking branch x (git's
+   *  DWIM checkout), VS Code style. */
+  async function checkoutBranch(name: string): Promise<void> {
+    if (!root || fsaRoot) return;
+    const localName = name.startsWith("origin/") ? name.slice("origin/".length) : name;
+    setGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "checkout", name });
+      if (res.code !== 0) {
+        toast.error(`Could not switch to ${localName}`, {
+          description: ((res.stderr || res.stdout).trim() || `git checkout exited with ${res.code}`).slice(0, 240)
+        });
+        return;
+      }
+      toast.success(`Switched to ${localName}`, { description: "Workspace reloaded from the branch." });
+      await loadFolder(root, { announce: false });
+    } catch (error) {
+      toast.error(`Could not switch to ${localName}`, { description: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  /** Create a local branch off the current HEAD and switch to it
+   *  (`git checkout -b <name>`). Returns whether it switched. */
+  async function createBranch(name: string): Promise<boolean> {
+    if (!root || fsaRoot) return false;
+    setGitBusy(true);
+    try {
+      const res = await localFolder.runGit({ root, op: "checkout-new", name });
+      if (res.code !== 0) {
+        toast.error(`Could not create ${name}`, {
+          description: ((res.stderr || res.stdout).trim() || `git exited with ${res.code}`).slice(0, 240)
+        });
+        return false;
+      }
+      toast.success(`Created ${name}`, { description: "Switched to the new branch — your commits land here." });
+      await loadFolder(root, { announce: false });
+      return true;
+    } catch (error) {
+      toast.error(`Could not create ${name}`, { description: error instanceof Error ? error.message : String(error) });
+      return false;
+    } finally {
+      setGitBusy(false);
     }
   }
 
@@ -1428,8 +1521,14 @@ export function useTestWorkspace(project: Project) {
      *  the chrome surfaces the Output panel for it. */
     reattached: attachedHere && !running,
     cancelRun,
-    importProgress,
-    pendingImport,
+    gitBusy,
+    gitBranch,
+    gitTick,
+    pullWorkspace,
+    pushWorkspace,
+    commitWorkspace,
+    checkoutBranch,
+    createBranch,
     runnerOnline,
     /** Saved FSA workspace awaiting a click-granted permission — the
      *  explorer renders a reconnect banner for it. */
@@ -1466,10 +1565,6 @@ export function useTestWorkspace(project: Project) {
     dismissDelete: () => setPendingDelete(undefined),
     confirmDelete,
     pendingDelete,
-    stageImport,
-    applyImport,
-    dismissImport: () => setPendingImport(undefined),
-    markCommitted,
     run,
     runnerUrl: runnerUrl()
   };

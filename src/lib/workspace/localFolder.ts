@@ -167,4 +167,14 @@ export type GitOp =
   | { op: "stash-push"; message?: string; paths?: string[] }
   | { op: "stash-pop"; index?: number }
   | { op: "stash-drop"; index: number }
-  | { op: "blame"; path: string };
+  | { op: "blame"; path: string }
+  // VS Code-style SCM ops on the open clone — all LOCAL git; auth is the
+  // machine's credential helper, never a token in the app.
+  | { op: "pull" }
+  | { op: "push" }
+  | { op: "commit"; message: string; paths: string[] }
+  | { op: "current-branch" }
+  | { op: "branch-list" }
+  | { op: "checkout"; name: string }
+  | { op: "checkout-new"; name: string }
+  | { op: "log" };

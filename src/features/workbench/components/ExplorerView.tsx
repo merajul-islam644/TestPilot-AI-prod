@@ -9,13 +9,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { FileInput, FilePlus, FolderOpen, FolderPlus, PanelLeftClose, RefreshCw } from "lucide-react";
-import type { ImportProgress } from "../../../lib/blocks/data";
 import { withRootNode, type TreeNode } from "../model/treeModel";
 import { TreeRow } from "./TreeRow";
 
 type Adding = { kind: "file" | "folder" | "rename"; folder: string | null; original: string | null };
 
-export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconnect, opening, importProgress, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onReconnectFsa, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport, onOpenFileFromDisk }: {
+export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconnect, opening, newFileSignal, root, runnablePaths, onNewFile, onNewFolder, onOpenFile, onReconnectFsa, onRename, onRequestDelete, onToggleDir, onToggleSidebar, onImport, onOpenFileFromDisk }: {
   tree: TreeNode[];
   activePath: string;
   dirtyPaths: Set<string>;
@@ -26,8 +25,6 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconn
   fsaReconnect?: { name: string } | null;
   /** True while a folder is being opened (tree walk + first reads). */
   opening: boolean;
-  /** Live progress for folder open / pull — drives the progress block above the tree. */
-  importProgress: ImportProgress | null;
   /** Bumped by "File: New File" (palette) to open the inline input. */
   newFileSignal: number;
   /** The open workspace folder on disk, or null when nothing is open. */
@@ -92,14 +89,6 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconn
     else await onNewFile(path);
   }
 
-  function progressLabel(progress: ImportProgress): string {
-    switch (progress.phase) {
-      case "clearing": return "Opening folder…";
-      case "reading": return `Reading ${progress.done}/${progress.total}`;
-      case "writing": return `Writing ${progress.done}/${progress.total}`;
-    }
-  }
-
   return (
     <div className="wb-view">
       <div className="wb-view-head">
@@ -123,21 +112,6 @@ export function ExplorerView({ tree, activePath, dirtyPaths, expanded, fsaReconn
         </span>
       </div>
       <div className="wb-tree">
-        {importProgress ? (
-          <div className="wb-import-progress" role="status">
-            <span className="wb-import-progress-label">{progressLabel(importProgress)}</span>
-            <span className="wb-import-progress-track" aria-hidden="true">
-              <span
-                className="wb-import-progress-fill"
-                style={{
-                  width: importProgress.phase === "clearing" || importProgress.total === 0
-                    ? "100%"
-                    : `${Math.round((importProgress.done / importProgress.total) * 100)}%`
-                }}
-              />
-            </span>
-          </div>
-        ) : null}
         {adding ? (
           <div className="wb-tree-newfile">
             <input

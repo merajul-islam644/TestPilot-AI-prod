@@ -1,16 +1,12 @@
 // Status bar pinned to the workbench floor. LEFT: runner health, the run
-// target and live folder/pull progress. RIGHT: the current git branch
-// (VS Code style -- click opens Source Control), the open folder,
-// workspace size, language, cursor.
+// target. RIGHT: the current git branch of the OPEN clone (VS Code style
+// -- click opens Source Control), the open folder, workspace size,
+// language, cursor.
 
-import { useEffect, useState } from "react";
 import { GitBranch } from "lucide-react";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
-import type { ImportProgress } from "../../../lib/blocks/data";
-import { onScmChange, readScmContext } from "../lib/scmContext";
-import { parseRepoInput } from "../lib/github";
 
-export function StatusBar({ runnerOnline, runnerUrl, baseURL, root, filesCount, runnableCount, language, cursor, importProgress, scmChanges, onOpenScm }: {
+export function StatusBar({ runnerOnline, runnerUrl, baseURL, root, filesCount, runnableCount, language, cursor, gitBranch, scmChanges, onOpenScm }: {
   runnerOnline: boolean | undefined;
   runnerUrl: string;
   baseURL: string;
@@ -20,25 +16,14 @@ export function StatusBar({ runnerOnline, runnerUrl, baseURL, root, filesCount, 
   runnableCount: number;
   language: string;
   cursor: { line: number; col: number } | null;
-  importProgress: ImportProgress | null;
+  /** The open clone's current branch (null = not a git repository). */
+  gitBranch: string | null;
   /** Unsaved/changed files, shown as a count on the branch chip. */
   scmChanges: number;
   /** Clicking the branch chip opens the Source Control view. */
   onOpenScm: () => void;
 }) {
   const { t } = useT();
-  // The SCM context is written by the Source Control view; subscribe so
-  // the branch chip tracks it live without a prop through Workbench.
-  const [scm, setScm] = useState(() => readScmContext());
-  useEffect(() => onScmChange(() => setScm(readScmContext())), []);
-  const scmRepo = parseRepoInput(scm.repoInput);
-  const progressLabel = importProgress
-    ? importProgress.phase === "clearing"
-      ? "Opening folder…"
-      : importProgress.phase === "reading"
-        ? `Reading ${importProgress.done}/${importProgress.total}`
-        : `Writing ${importProgress.done}/${importProgress.total}`
-    : null;
   const rootName = root ? root.split(/[\\/]/).filter(Boolean).pop() ?? root : null;
   return (
     <footer aria-label="Status bar" className="wb-status" role="status">
@@ -55,22 +40,17 @@ export function StatusBar({ runnerOnline, runnerUrl, baseURL, root, filesCount, 
         <span className="wb-status-item" title={t("tests.baseURL")}>
           <span className="mono wb-status-url">{baseURL}</span>
         </span>
-        {progressLabel ? (
-          <span className="wb-status-item wb-status-import" title="Working — keep this tab open">
-            {progressLabel}
-          </span>
-        ) : null}
       </span>
       <span className="wb-status-right">
-        {scmRepo ? (
+        {gitBranch ? (
           <button
             className="wb-status-item wb-status-git"
             onClick={onOpenScm}
-            title={`${scmRepo.owner}/${scmRepo.repo}${scm.branch ? ` · ${scm.branch}` : ""} — open Source Control`}
+            title={`${gitBranch} — open Source Control`}
             type="button"
           >
             <GitBranch size={12} />
-            {scm.branch || "default"}
+            {gitBranch}
             {scmChanges > 0 ? <span className="wb-status-git-count">{scmChanges}</span> : null}
           </button>
         ) : null}

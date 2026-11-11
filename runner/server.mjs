@@ -1310,6 +1310,12 @@ app.post("/api/workbench/mkdir", async (req, res) => {
 // args: the runner builds every git argv itself, so the client can never
 // inject flags or commands. `code` carries git's exit status even when
 // non-zero — a failed stash pop (conflict) is a normal state, not a 500.
+
+/** Git refnames can't start with "-" (that would parse as a flag) and
+ *  can't contain spaces/whitespace — the allowlist covers sane local
+ *  branch names ("main", "dev", "feature/x-2"). */
+const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
 const GIT_OPS = {
   status: () => ["-c", "core.quotepath=false", "status", "--porcelain=v1", "--untracked-files=normal"],
   "stash-list": () => ["stash", "list", "--format=%gd%x09%gs"],
@@ -1338,7 +1344,44 @@ const GIT_OPS = {
     const safe = safeResolveUserFolder(root, body.path);
     if (!safe) return { error: "bad path" };
     return { args: ["blame", "--porcelain", "--", body.path] };
-  }
+  },
+  // VS Code-style SCM on the open clone: pull/push/commit/branch are all
+  // LOCAL git. Auth comes from the machine's own credential helper —
+  // exactly how desktop VS Code talks to GitHub — so no token ever
+  // passes through the app.
+  pull: () => ["pull", "--no-edit"],
+  push: () => ["push", "--set-upstream", "origin", "HEAD"],
+  commit: (body, root) => {
+    const message = typeof body.message === "string" ? body.message.trim().slice(0, 300) : "";
+    if (!message) return { error: "a commit message is required" };
+    const paths = Array.isArray(body.paths) ? body.paths.filter((entry) => typeof entry === "string") : [];
+    if (paths.length === 0) return { error: "at least one file path is required" };
+    const args = ["commit", "-m", message, "--"];
+    for (const entry of paths) {
+      const safe = safeResolveUserFolder(root, entry);
+      if (!safe) return { error: `bad path: ${entry}` };
+      args.push(entry);
+    }
+    return { args };
+  },
+  "current-branch": () => ["rev-parse", "--abbrev-ref", "HEAD"],
+  // --all: local branches AND remote ones (origin/x) — VS Code's picker
+  // shows both; the client filters the origin/HEAD pseudo-ref.
+  "branch-list": () => ["branch", "--list", "--all", "--format=%(refname:short)"],
+  checkout: (body) => {
+    const raw = typeof body.name === "string" ? body.name.trim() : "";
+    // "origin/feature/x" -> "feature/x": git's DWIM checkout creates a
+    // local branch tracking the remote one, exactly like VS Code.
+    const name = raw.startsWith("origin/") ? raw.slice("origin/".length) : raw;
+    if (!REF_NAME.test(name)) return { error: "bad branch name" };
+    return { args: ["checkout", name] };
+  },
+  "checkout-new": (body) => {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!REF_NAME.test(name)) return { error: "bad branch name" };
+    return { args: ["checkout", "-b", name] };
+  },
+  log: () => ["log", "-n", "8", "--format=%H%x09%s%x09%an%x09%aI"]
 };
 
 app.post("/api/git", async (req, res) => {
@@ -1352,10 +1395,20 @@ app.post("/api/git", async (req, res) => {
     res.status(403).json({ error: built.error });
     return;
   }
+  // Ops may return the argv directly or wrap it ({ args }) — both were
+  // used in practice (status/stash-list returned bare arrays, which
+  // silently ran `git` with NO args and printed usage).
+  const args = Array.isArray(built) ? built : built.args;
+  if (!Array.isArray(args)) {
+    res.status(500).json({ error: "op produced no argv" });
+    return;
+  }
   try {
-    const { stdout, stderr } = await execFileAsync("git", built.args, {
+    const { stdout, stderr } = await execFileAsync("git", args, {
       cwd: root,
-      timeout: 20_000,
+      // Network ops (pull/push) legitimately take longer than local
+      // ones on a slow link; local mutations stay snappy.
+      timeout: op === "pull" || op === "push" ? 120_000 : 20_000,
       maxBuffer: 8 * 1024 * 1024,
       windowsHide: true
     });

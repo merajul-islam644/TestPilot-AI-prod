@@ -193,7 +193,7 @@ export function Workbench({ project }: { project: Project }) {
     { id: "wb.newFile", label: "File: New File", run: () => { workbenchStore.setSidebarView("explorer"); setNewFileSignal((v) => v + 1); } },
     { id: "wb.import", label: "Workspace: Open Folder (disk)", run: () => { workbenchStore.setSidebarView("explorer"); void ws.openFolder(); } },
     { id: "wb.openFile", label: "File: Open File from Disk", run: () => { workbenchStore.setSidebarView("explorer"); void ws.openFileFromDisk(); } },
-    { id: "wb.gitPull", label: "Git: Pull from GitHub", run: () => workbenchStore.setSidebarView("scm") },
+    {id: "wb.gitPull", label: "Git: Pull", run: () => workbenchStore.setSidebarView("scm") },
     { id: "wb.gitPush", label: "Git: Commit & Push", run: () => workbenchStore.setSidebarView("scm") },
     { id: "wb.explorer", label: "View: Explorer", run: () => workbenchStore.setSidebarView("explorer") },
     { id: "wb.search", label: "View: Search", run: () => workbenchStore.setSidebarView("search") },
@@ -236,7 +236,6 @@ export function Workbench({ project }: { project: Project }) {
                 dirtyPaths={ws.gitDirtyPaths}
                 expanded={expanded}
                 fsaReconnect={ws.fsaReconnect}
-                importProgress={ws.importProgress}
                 newFileSignal={newFileSignal}
                 onImport={() => void ws.openFolder()}
                 onOpenFileFromDisk={() => void ws.openFileFromDisk()}
@@ -266,15 +265,19 @@ export function Workbench({ project }: { project: Project }) {
             ) : null}
             {sidebarView === "scm" ? (
               <SourceControlView
-                busy={ws.saving || ws.opening}
-                contentOf={ws.contentOf}
+                busy={ws.saving || ws.opening || ws.gitBusy}
                 dirtyPaths={ws.gitDirtyPaths}
+                gitBranch={ws.gitBranch}
+                gitTick={ws.gitTick}
                 root={ws.root}
-                onMarkCommitted={(files) => void ws.markCommitted(files)}
+                onCheckout={(name) => ws.checkoutBranch(name)}
+                onCommit={(paths, message) => ws.commitWorkspace(paths, message)}
+                onCreateBranch={(name) => ws.createBranch(name)}
                 onOpenDiff={(path) => workbenchStore.openDiff(path)}
+                onPull={() => ws.pullWorkspace()}
+                onPush={() => ws.pushWorkspace()}
                 onRevert={ws.revertFile}
                 onSaveAll={() => void ws.saveAll()}
-                onStagePull={ws.stageImport}
                 onToggleSidebar={() => workbenchStore.toggleSidebar()}
               />
             ) : null}
@@ -360,7 +363,7 @@ export function Workbench({ project }: { project: Project }) {
         baseURL={ws.baseURL}
         cursor={activePath ? cursor : null}
         filesCount={ws.paths.length}
-        importProgress={ws.importProgress}
+        gitBranch={ws.gitBranch}
         language={language}
         onOpenScm={() => workbenchStore.setSidebarView("scm")}
         root={ws.root}
@@ -391,21 +394,6 @@ export function Workbench({ project }: { project: Project }) {
           onCancel={() => ws.dismissDelete()}
           onConfirm={() => void ws.confirmDelete()}
           title={`Delete ${ws.pendingDelete.path}?`}
-        />
-      ) : null}
-
-      {ws.pendingImport ? (
-        <ConfirmDialog
-          confirmLabel={t("tests.importConfirmAction")}
-          message={t("tests.importConfirmBody").replace("{count}", String(ws.pendingImport.files.length))}
-          onCancel={() => ws.dismissImport()}
-          onConfirm={() => {
-            // Pulled files land in the open folder — the saved session's
-            // paths may be new, so reset to defaults instead of restoring.
-            workbenchStore.beginFreshSession();
-            void ws.applyImport();
-          }}
-          title={t("tests.importConfirmTitle")}
         />
       ) : null}
 
