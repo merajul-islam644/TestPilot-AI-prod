@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Play } from "lucide-react";
 import { Modal } from "../../shared/ui/Modal";
 import { derivedSuiteForProject, projects } from "../../lib/demo/data";
 import type { Environment } from "../../lib/demo/data";
@@ -216,7 +217,7 @@ export function NewRunModal({ onClose }: { onClose: () => void }) {
         <div className="form-actions">
           <button className="secondary-button" disabled={starting} onClick={onClose}>{t("common.cancel")}</button>
           <button className="primary-button" disabled={!canStart} onClick={() => void handleSubmit()}>
-            {starting ? t("newRun.starting") : t("newRun.start")}
+            <Play size={16} /> {starting ? t("newRun.starting") : t("newRun.start")}
           </button>
         </div>
       </div>

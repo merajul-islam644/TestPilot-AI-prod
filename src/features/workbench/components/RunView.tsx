@@ -28,40 +28,62 @@ export function RunView({ baseURL, onBaseURLChange, onCancel, onRun, running, ru
         <span className="wb-view-title">Run</span>
       </div>
       <div className="wb-run-body">
-        <p className="wb-run-subtitle">Run the Playwright specs in this workspace against:</p>
-        <label className="form-field wb-run-url">
-          <span>{t("tests.baseURL")}</span>
-          <input
-            onChange={(event) => onBaseURLChange(event.target.value)}
-            placeholder={t("tests.baseURLPlaceholder")}
-            spellCheck={false}
-            value={baseURL}
-          />
-        </label>
-        {running ? (
-          /* While a suite executes the primary action becomes the stop
-             button — a disabled "Running…" label gave the user no way out
-             of a slow (tens-of-minutes) run. */
-          <button className="danger-button wb-run-btn" onClick={onCancel} type="button">
-            <Square size={15} /> {t("run.cancel")}
-          </button>
-        ) : (
-          <button className="primary-button wb-run-btn" disabled={runnableCount === 0} onClick={onRun} type="button">
-            <Play size={15} /> {t("tests.run")}
-          </button>
-        )}
+        {/* Configuration card: what to run against + the primary action in
+            ONE bordered unit — the eye lands on the run controls first,
+            and the loose stack of texts becomes a single visible block. */}
+        <div className="wb-run-config">
+          <p className="wb-run-subtitle">Run the Playwright specs in this workspace against:</p>
+          <label className="form-field wb-run-url">
+            <span>{t("tests.baseURL")}</span>
+            <input
+              onChange={(event) => onBaseURLChange(event.target.value)}
+              placeholder={t("tests.baseURLPlaceholder")}
+              spellCheck={false}
+              value={baseURL}
+            />
+          </label>
+          {running ? (
+            /* While a suite executes the primary action becomes the stop
+               button — a disabled "Running…" label gave the user no way out
+               of a slow (tens-of-minutes) run. */
+            <button className="danger-button wb-run-btn" onClick={onCancel} type="button">
+              <Square size={15} /> {t("run.cancel")}
+            </button>
+          ) : (
+            <button className="primary-button wb-run-btn" disabled={runnableCount === 0} onClick={onRun} type="button">
+              <Play size={15} /> {t("tests.run")}
+            </button>
+          )}
+        </div>
+
+        {/* The workspace's shape as count tiles — the numbers were buried in
+            a muted sentence before; now they read at a glance like the
+            metric tiles elsewhere in the app. */}
+        <div className="wb-run-stats">
+          <div className="wb-run-stat">
+            <div className="wb-run-stat-num">{runnableCount}</div>
+            <div className="wb-run-stat-label">runnable spec{runnableCount === 1 ? "" : "s"}</div>
+          </div>
+          <div className="wb-run-stat">
+            <div className="wb-run-stat-num">{filesCount}</div>
+            <div className="wb-run-stat-label">file{filesCount === 1 ? "" : "s"}</div>
+          </div>
+        </div>
+
+        {/* Runner liveness as its own status row — dot + state + the URL it
+            answers on, instead of a muted inline line that scrolled past. */}
+        {runnerOnline !== undefined ? (
+          <div className="wb-run-status">
+            <span className={`health-dot ${runnerOnline ? "ok" : ""}`} />
+            <div className="wb-run-status-text">
+              <span>{runnerOnline ? t("tests.runnerOnline") : t("tests.runnerOff")}</span>
+              <span className="mono wb-run-status-url">{runnerUrl}</span>
+            </div>
+          </div>
+        ) : null}
+
         {running ? (
           <p className="wb-run-meta muted"><RotateCw size={13} className="wb-spin" style={{ verticalAlign: -2 }} /> {t("tests.running")}</p>
-        ) : null}
-        <p className="wb-run-meta muted">
-          {runnableCount} runnable spec{runnableCount === 1 ? "" : "s"} · {filesCount} file{filesCount === 1 ? "" : "s"}
-        </p>
-        {runnerOnline !== undefined ? (
-          <p className="wb-run-meta muted">
-            <span className={`health-dot ${runnerOnline ? "ok" : ""}`} />{" "}
-            {runnerOnline ? t("tests.runnerOnline") : t("tests.runnerOff")}{" "}
-            <span className="mono">{runnerUrl}</span>
-          </p>
         ) : null}
 
         {outcome ? (

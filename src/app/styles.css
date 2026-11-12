@@ -339,16 +339,31 @@ section { margin: 0 auto; max-width: 1440px; width: 100%; }
 .table-shell { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); margin-bottom: 12px; overflow-x: auto; }
 .table-shell.flush { margin-bottom: 0; }
 table { border-collapse: collapse; width: 100%; }
-.table-shell table { min-width: 680px; }
-th, td { border-bottom: 1px solid hsl(var(--border)); padding: 11px 14px; text-align: left; vertical-align: middle; }
+/* 13px body cells: td inherits the 16px root otherwise, so every table
+   read oversized next to its 12px headers — the "huge content" look. */
+.table-shell table { font-size: 13px; min-width: 680px; }
+/* Opt-in exact column widths (run-stats tables): auto layout re-measures
+   per row and lets the gaps drift unevenly; fixed honors every hint. */
+.table-shell table.table-fixed { table-layout: fixed; }
+th, td { border-bottom: 1px solid hsl(var(--border)); padding: 9px 14px; text-align: left; vertical-align: middle; }
 th { color: hsl(var(--muted-foreground)); font-size: 12px; font-weight: 600; letter-spacing: 0; }
 tbody tr { transition: background-color 0.12s ease; }
 tbody tr:hover { background: hsl(var(--secondary) / 0.55); }
 tbody tr:last-child td { border-bottom: 0; }
 tr.row-link { cursor: pointer; }
 td.num-cell, th.num-cell { text-align: right; font-variant-numeric: tabular-nums; }
+/* Extra breathing room before a left-aligned column that follows a
+   right-aligned one (Duration → Date) — their contents would otherwise
+   sit separated by padding alone. */
+.table-shell th.col-gap-l, .table-shell td.col-gap-l { padding-left: 30px; }
 .table-link { color: hsl(var(--high-emphasis)); font-weight: 600; }
 a.table-link:hover { color: hsl(var(--primary)); }
+/* Not-applicable cells in run tables (a live row's rate/duration, a
+   future date) render a quiet em dash instead of an ellipsis that reads
+   as "loading". Counts themselves stay neutral — the status badge is
+   the row's color story; tinting the numbers turned mostly-cancelled
+   tables into a grey wash. */
+.cell-muted { color: hsl(var(--muted-foreground)); }
 .row-actions { align-items: center; display: flex; gap: 6px; justify-content: flex-end; }
 
 /* ============================================================
@@ -738,11 +753,11 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 /* Sonner renders its own stack; inherit the app's type so toasts do not
    arrive in a different typeface than the surface they report on. */
 [data-sonner-toaster] { font-family: inherit; }
-.health-list { display: grid; gap: 2px; }
-.health-row { align-items: center; background: transparent; border: 0; border-radius: var(--radius); cursor: pointer; display: flex; font: inherit; gap: 10px; padding: 9px 10px; text-align: left; transition: background-color 0.12s ease; width: 100%; }
-.health-row:hover { background: hsl(var(--secondary) / 0.55); }
+.health-list { display: grid; gap: 6px; }
+.health-row { align-items: center; background: transparent; border: 1px solid hsl(var(--border)); border-radius: var(--radius); cursor: pointer; display: flex; font: inherit; gap: 10px; padding: 6px 10px; text-align: left; transition: background-color 0.12s ease, border-color 0.12s ease; width: 100%; }
+.health-row:hover { background: hsl(var(--secondary) / 0.55); border-color: hsl(var(--muted-foreground) / 0.6); }
 .health-row-name { align-items: center; display: flex; flex: 1; font-size: 13.5px; font-weight: 500; gap: 8px; min-width: 0; overflow: hidden; }
-.health-row-name .project-icon { height: 26px; width: 26px; border-radius: 8px; }
+.health-row-name .project-icon { height: 22px; width: 22px; border-radius: 7px; }
 .health-row-health { color: hsl(var(--muted-foreground)); flex-shrink: 0; font-size: 12.5px; white-space: nowrap; }
 .health-row-rate { color: hsl(var(--muted-foreground)); flex-shrink: 0; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
 .progress-row { align-items: center; display: flex; gap: 14px; }
@@ -920,3 +935,249 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .org-switcher:disabled { cursor: not-allowed; opacity: 0.5; }
 .org-switcher span { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 880px) { .org-switcher span { display: none; } }
+/* ---------- overview: global branch & runs section ---------- */
+/* One panel that aligns every project's open runner folder onto a branch
+   and runs them in sequence, with a live animated card per folder. The
+   workbench's per-project switcher stays authoritative for its own
+   clone; this section makes divergence visible and acts with a confirm. */
+.gb-section {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px 14px;
+}
+.gb-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.gb-title { align-items: center; display: inline-flex; font-size: 12.5px; font-weight: 600; gap: 6px; }
+.gb-spacer { flex: 1; }
+.gb-picker { min-width: 190px; }
+/* In-progress badge (queue counter / "Runner busy") — amber, the wait/
+   attention color, so it reads at a glance as something executing. */
+.gb-overall {
+  align-items: center;
+  background: hsl(var(--warning) / 0.14);
+  border-radius: 999px;
+  color: hsl(var(--warning));
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.gb-overall .gb-spin { color: hsl(var(--warning)); }
+.gb-refresh {
+  align-items: center;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  display: inline-flex;
+  padding: 5px 7px;
+}
+.gb-refresh:hover { color: hsl(var(--foreground)); }
+/* Run = the app's primary blue (same as "New test run"); stop stays red —
+   overrides the primary/secondary classes these buttons also carry. */
+.gb-run {
+  align-items: center;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  display: inline-flex;
+  font-size: 12.5px;
+  gap: 6px;
+  padding: 5px 12px;
+}
+.gb-run:hover:not(:disabled) { background: hsl(var(--primary-strong)); }
+.gb-run:disabled { cursor: not-allowed; opacity: 0.5; }
+.gb-stop {
+  align-items: center;
+  background: hsl(var(--destructive));
+  border-color: transparent;
+  color: hsl(0 0% 100%);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 5px;
+  padding: 4px 10px;
+}
+.gb-stop:hover:not(:disabled) { background: hsl(var(--destructive) / 0.88); }
+
+.gb-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.gb-card {
+  animation: gb-in 0.35s ease backwards;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.gb-card:hover { border-color: hsl(var(--primary) / 0.4); transform: translateY(-1px); }
+.gb-card.is-queued { opacity: 0.78; }
+.gb-card.is-running { animation: gb-in 0.35s ease backwards, gb-pulse 2s ease-in-out infinite; border-color: hsl(var(--primary) / 0.6); }
+.gb-card.is-passed { border-color: hsl(var(--success) / 0.55); }
+.gb-card.is-failed { border-color: hsl(var(--destructive) / 0.55); }
+.gb-card.is-cancelled { opacity: 0.8; }
+.gb-card-top { align-items: center; display: flex; gap: 8px; }
+.gb-card-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-card-side { align-items: center; display: inline-flex; gap: 6px; }
+.gb-card-run {
+  align-items: center;
+  background: hsl(var(--primary) / 0.12);
+  border: none;
+  border-radius: 7px;
+  color: hsl(var(--primary));
+  cursor: pointer;
+  display: inline-flex;
+  opacity: 0;
+  padding: 4px 6px;
+  transition: opacity 0.15s ease;
+}
+.gb-card:hover .gb-card-run, .gb-card-run:focus-visible { opacity: 1; }
+.gb-card-run:hover { background: hsl(var(--primary) / 0.2); }
+.gb-card-run:disabled { cursor: not-allowed; opacity: 0 !important; }
+.gb-card-cancel {
+  align-items: center;
+  background: hsl(var(--destructive) / 0.12);
+  border: none;
+  border-radius: 7px;
+  color: hsl(var(--destructive));
+  cursor: pointer;
+  display: inline-flex;
+  padding: 4px 6px;
+}
+.gb-card-cancel:hover { background: hsl(var(--destructive) / 0.22); }
+.gb-remote { color: hsl(var(--muted-foreground)); font-size: 10.5px; }
+.gb-card-branch { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.gb-pill {
+  align-items: center;
+  background: hsl(var(--secondary));
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 4px;
+  max-width: 160px;
+  overflow: hidden;
+  padding: 2px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-pill.is-diverged { color: hsl(var(--primary)); outline: 1px solid hsl(var(--primary) / 0.45); outline-offset: -1px; }
+.gb-pill.is-broken { color: hsl(var(--destructive)); }
+.gb-ok { color: hsl(var(--success)); }
+.gb-bad { color: hsl(var(--destructive)); }
+.gb-dim { color: hsl(var(--muted-foreground)); }
+
+.gb-progress { display: flex; flex-direction: column; gap: 5px; }
+.gb-track { background: hsl(var(--secondary)); border-radius: 999px; height: 6px; overflow: hidden; }
+.gb-fill { border-radius: 999px; height: 100%; transition: width 0.5s ease; }
+.gb-fill.is-run {
+  animation: gb-stripes 0.8s linear infinite;
+  background-color: hsl(var(--primary));
+  background-image: linear-gradient(45deg,
+    hsl(var(--primary-foreground) / 0.25) 25%, transparent 25%, transparent 50%,
+    hsl(var(--primary-foreground) / 0.25) 50%, hsl(var(--primary-foreground) / 0.25) 75%, transparent 75%);
+  background-size: 14px 14px;
+}
+.gb-progress-meta { align-items: center; display: flex; justify-content: space-between; }
+.gb-pct { font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 700; }
+.gb-counts { display: inline-flex; font-size: 11px; font-variant-numeric: tabular-nums; gap: 8px; }
+.gb-err {
+  color: hsl(var(--destructive));
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-wait { display: flex; gap: 4px; padding: 3px 0; }
+.gb-wait span {
+  animation: gb-bounce 1s ease-in-out infinite;
+  background: hsl(var(--muted-foreground) / 0.5);
+  border-radius: 999px;
+  height: 5px;
+  width: 5px;
+}
+.gb-wait span:nth-child(2) { animation-delay: 0.15s; }
+.gb-wait span:nth-child(3) { animation-delay: 0.3s; }
+
+.gb-skel { gap: 10px; }
+.gb-skel-line {
+  animation: gb-shimmer 1.4s ease infinite;
+  background: linear-gradient(90deg, hsl(var(--secondary)) 25%, hsl(var(--accent)) 50%, hsl(var(--secondary)) 75%);
+  background-size: 200% 100%;
+  border-radius: 6px;
+  height: 12px;
+}
+.gb-skel-line.w-60 { width: 60%; }
+.gb-skel-line.w-40 { width: 40%; }
+.gb-skel-line.w-80 { width: 80%; }
+.gb-empty { color: hsl(var(--muted-foreground)); font-size: 12.5px; padding: 12px 4px 4px; }
+.gb-foot {
+  border-top: 1px dashed hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  margin-top: 10px;
+  overflow: hidden;
+  padding-top: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-spin { animation: gb-spin 1s linear infinite; }
+@keyframes gb-spin { to { transform: rotate(360deg); } }
+@keyframes gb-stripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
+@keyframes gb-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.18); }
+  50% { box-shadow: 0 0 0 5px hsl(var(--primary) / 0); }
+}
+@keyframes gb-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes gb-bounce {
+  0%, 100% { opacity: 0.5; transform: translateY(0); }
+  50% { opacity: 1; transform: translateY(-3px); }
+}
+@keyframes gb-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .gb-card, .gb-card.is-running, .gb-fill.is-run, .gb-spin, .gb-wait span, .gb-skel-line { animation: none !important; }
+}
+
+/* Overview → Project health: while a project's runner run executes, its
+   row sweeps a light left → right, the way a running test suite reads. */
+.health-row-running { overflow: hidden; position: relative; }
+.health-row-running::after {
+  /* Constant-speed (linear) beam with soft blurred edges — it glides out
+     right and re-enters left without ever slowing down, so the loop reads
+     as one continuous streak of light, not a back-and-forth tug. */
+  animation: health-sweep 1.6s linear infinite;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    hsl(var(--primary) / 0.10) 25%,
+    hsl(var(--primary) / 0.32) 50%,
+    hsl(var(--primary) / 0.10) 75%,
+    transparent 100%);
+  content: "";
+  inset: 0 auto 0 0;
+  filter: blur(5px);
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-110%);
+  width: 50%;
+}
+@keyframes health-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .health-row-running::after { animation: none !important; }
+}

@@ -655,10 +655,14 @@ export function buildProjectStats(runs: Run[], days: number, now = Date.now()): 
 
 export type FailingTest = { name: string; count: number };
 
-export function buildTopFailingTests(runs: Run[], caseResults: CaseResult[], limit = 6): FailingTest[] {
+export function buildTopFailingTests(runs: Run[], caseResults: CaseResult[], options: { days?: number; limit?: number; now?: number } = {}): FailingTest[] {
+  const { days, limit = 6, now = Date.now() } = options;
+  // Honor the page's range selector: without `days` the section counted
+  // ALL history while every other section on the page respected 30/60.
+  const since = days !== undefined ? startOfDay(now) + DAY_MS - days * DAY_MS : -Infinity;
   const counts = new Map<string, number>();
   for (const run of completedRuns(runs)) {
-    if (run.status !== "failed") continue;
+    if (run.status !== "failed" || run.startedAt < since) continue;
     // Only persisted per-case rows count — every runner run persists them,
     // and there is no other kind of run anymore.
     const cases = caseResults.filter((entry) => entry.runId === run.id);

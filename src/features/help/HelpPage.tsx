@@ -1,3 +1,4 @@
+import { Play } from "lucide-react";
 import { useShell } from "../../app/layout/ShellContext";
 import { useRoute } from "../../app/router/routes";
 import type { RunStatus } from "../../lib/demo/data";
@@ -73,7 +74,7 @@ export function HelpPage() {
               <div>
                 <h4>{t("help.start.three.title")}</h4>
                 <p>{t("help.start.three.desc")}</p>
-                <button className="tertiary-button" onClick={openNewRun}>{t("command.startRun")}</button>
+                <button className="tertiary-button" onClick={openNewRun}><Play size={16} /> {t("command.startRun")}</button>
               </div>
             </li>
           </ol>

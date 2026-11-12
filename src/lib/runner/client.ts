@@ -119,6 +119,19 @@ export async function pingRunner(): Promise<boolean> {
   }
 }
 
+/** The workspace's own base URL — the E2E_BASE_URL its .env files set, as
+ *  the runner would resolve it for /run (env wins over the manual value
+ *  there). null when the runner is unreachable or the workspace sets none. */
+export async function fetchRunnerEnvBaseURL(root: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${RUNNER_URL}/env?root=${encodeURIComponent(root)}`, { signal: AbortSignal.timeout(4_000) });
+    const body = (await response.json().catch(() => null)) as { baseURL?: string | null } | null;
+    return typeof body?.baseURL === "string" && body.baseURL ? body.baseURL : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The agent's pairing code — the terminal WebSocket refuses connections
  *  without it (WebSocket has no CORS, so the code is the door). null when
  *  the agent is unreachable or predates pairing (older frontend compat:

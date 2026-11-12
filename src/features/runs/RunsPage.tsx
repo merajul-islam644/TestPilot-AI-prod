@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
-import { Plus, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
-import { useShell } from "../../app/layout/ShellContext";
 import { projects } from "../../lib/demo/data";
 import type { Run, RunStatus } from "../../lib/demo/data";
 import { useT } from "../../lib/i18n/LocalizationProvider";
@@ -10,22 +9,23 @@ import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Select } from "../../shared/ui/select";
-import { RUN_STATUS_KEYS } from "./runColumns";
-import { useRunColumns } from "./runColumns";
+import { RUN_STATUS_KEYS, useRunStatsColumns } from "./runColumns";
+
+/** Same page size as the Overview table so both lists read identically. */
+const RUNS_PAGE_SIZE = 10;
 
 export function RunsPage() {
   const { runs } = useDemoState();
   const { navigate } = useRoute();
-  const { openNewRun } = useShell();
   const { t } = useT();
   const [projectFilter, setProjectFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<RunStatus | "">("");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
-  // The list is where in-flight runs are managed: each live row carries a
-  // stop button that cancels the run (and kills the runner's Playwright
-  // child for real).
-  const runColumns = useRunColumns((run) => navigate(`/runs/${run.id}`), { onCancel: (run) => cancelRun(run.id) });
+  // Same stats table as the Overview's Recent test runs — one column
+  // system everywhere — with the stop button armed on live rows.
+  const runColumns = useRunStatsColumns({ onCancel: (run) => cancelRun(run.id) });
 
   const filtered = useMemo(() => runs.filter((run: Run) => {
     if (projectFilter && run.projectId !== projectFilter) return false;
@@ -36,17 +36,19 @@ export function RunsPage() {
 
   const hasFilters = Boolean(projectFilter || statusFilter || query);
 
+  // A new filter or search resets paging; page also clamps when the
+  // filtered list shrinks below the current page.
+  useEffect(() => {
+    setPage(1);
+  }, [projectFilter, query, statusFilter]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / RUNS_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * RUNS_PAGE_SIZE;
+  const visibleRows = filtered.slice(start, start + RUNS_PAGE_SIZE);
+
   return (
     <section>
-      <PageHeader
-        actions={(
-          <button className="primary-button" onClick={openNewRun}>
-            <Plus size={16} /> {t("runs.newRun")}
-          </button>
-        )}
-        subtitle={t("runs.subtitle")}
-        title={t("runs.title")}
-      />
+      <PageHeader subtitle={t("runs.subtitle")} title={t("runs.title")} />
 
       <div className="toolbar">
         <label className="search-box">
@@ -76,20 +78,40 @@ export function RunsPage() {
       </div>
 
       {filtered.length === 0 && !hasFilters ? (
-        <EmptyState
-          action={(
-            <button className="primary-button" onClick={openNewRun}>
-              <Plus size={16} /> {t("runs.newRun")}
-            </button>
-          )}
-          description={t("runs.subtitle")}
-          title={t("runs.empty")}
-        />
+        <EmptyState description={t("runs.subtitle")} title={t("runs.empty")} />
       ) : filtered.length === 0 ? (
         <EmptyState description={t("common.notFound")} title={t("runs.empty")} />
       ) : (
-        <DataTable columns={runColumns} onRowClick={(run) => navigate(`/runs/${run.id}`)} rows={filtered} />
+        <DataTable columns={runColumns} fixed onRowClick={(run) => navigate(`/runs/${run.id}`)} rows={visibleRows} />
       )}
+      {filtered.length > 0 && totalPages > 1 ? (
+        <div className="pagination">
+          <span className="pagination-count">
+            {start + 1}–{Math.min(start + RUNS_PAGE_SIZE, filtered.length)} / {filtered.length}
+          </span>
+          <div className="pagination-controls">
+            <button
+              className="secondary-button"
+              disabled={safePage <= 1}
+              onClick={() => setPage(Math.max(1, safePage - 1))}
+              type="button"
+            >
+              {t("users.prevPage")}
+            </button>
+            <span>
+              {t("users.page")} {safePage} {t("users.of")} {totalPages}
+            </span>
+            <button
+              className="secondary-button"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage(Math.min(totalPages, safePage + 1))}
+              type="button"
+            >
+              {t("users.nextPage")}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -13,6 +13,7 @@ import { formatDateTime, formatDuration, formatMs } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { CaseError, CaseTree } from "../../shared/ui/CaseTree";
+import { Breadcrumb, type Crumb } from "../../shared/ui/Breadcrumb";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { RunStatusBadge, SimulatedBadge, StatusBadge } from "../../shared/ui/StatusBadge";
@@ -27,7 +28,17 @@ const BROWSER_KEYS: Record<Run["browser"], string> = { chromium: "Chromium", web
 /** The run detail body, shared by the sidebar route and the project
  *  page's in-context drill-down (which passes its own back/open
  *  callbacks so nothing here can pull the user into a sidebar page). */
-export function RunDetailView({ runId, onBack, onOpenIssue }: {
+export function RunDetailView({ crumbs, hideHeader = false, runId, onBack, onOpenIssue }: {
+  /** Optional hierarchy trail (Test runs › this run) rendered at the top.
+   *  Like every breadcrumb it must live INSIDE the section — a sibling
+   *  would span main's full width and misalign with the centered content. */
+  crumbs?: Crumb[];
+  /** The sidebar route carries a breadcrumb (Test runs › this run), so back
+   *  arrow + repeated heading are suppressed there — only the start time and
+   *  the cancel action remain, on the same row. The project page's
+   *  drill-down has no breadcrumb and keeps the full titlebar (its back
+   *  button IS the way out). */
+  hideHeader?: boolean;
   runId: string;
   onBack: () => void;
   /** Open a linked issue — the project page swaps in its own drill-down. */
@@ -184,22 +195,37 @@ export function RunDetailView({ runId, onBack, onOpenIssue }: {
 
   return (
     <section>
-      {/* Compact title bar: back arrow + THE one heading (the run name) and
-          start time on a single row; the cancel action sits at the right
-          edge. The project page hides its own heading while this drill is
-          open, so exactly one heading is visible. */}
-      <div className="titlebar">
-        <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
-          <ArrowLeft size={16} />
-        </button>
-        <h2>{run.name}</h2>
-        <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
-        {isLive ? (
-          <div className="titlebar-actions">
-            <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
+      {hideHeader ? (
+        /* ONE control level: the trail starts from the left edge, the start
+           time and the cancel action sit pinned to the right edge of the
+           same row — the breadcrumb replaces the old titlebar entirely. */
+        <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "space-between", marginBottom: 16 }}>
+          {crumbs ? <Breadcrumb items={crumbs} style={{ flex: "1 1 240px", marginBottom: 0, minWidth: 0 }} /> : null}
+          <div style={{ alignItems: "center", display: "flex", gap: 10 }}>
+            <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
+            {isLive ? (
+              <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
+            ) : null}
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : (
+        /* Compact title bar: back arrow + THE one heading (the run name) and
+            start time on a single row; the cancel action sits at the right
+            edge. The project page hides its own heading while this drill is
+            open, so exactly one heading is visible. */
+        <div className="titlebar">
+          <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
+            <ArrowLeft size={16} />
+          </button>
+          <h2>{run.name}</h2>
+          <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
+          {isLive ? (
+            <div className="titlebar-actions">
+              <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <div className="chips" style={{ marginBottom: 14 }}>
         <RunStatusBadge label={t(statusKey)} status={run.status} />

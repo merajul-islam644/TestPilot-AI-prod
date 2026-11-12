@@ -393,6 +393,18 @@ app.get("/results", (_req, res) => {
   res.json({ ok: true, results: finishedRuns });
 });
 
+// The workspace's effective base URL — the E2E_BASE_URL its own .env files
+// set, exactly the value /run would use (env wins over the request's manual
+// value there). Only this ONE key leaves the runner; the rest of the .env
+// contents (credentials) never do. Read-only, tiny — the app fetches it once
+// per opened folder so the Base URL field can show the real app under test
+// instead of its own placeholder.
+app.get("/env", async (req, res) => {
+  const root = typeof req.query.root === "string" ? req.query.root : "";
+  const envVars = await readWorkspaceEnvFiles(root);
+  res.json({ ok: true, baseURL: envVars.E2E_BASE_URL ?? null });
+});
+
 // Kill the in-flight Playwright run — the app's Cancel button. The tree
 // kill matters: the CLI spawns worker processes, and killing only the
 // parent on Windows would leave them holding browser sessions.

@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
-import { ChevronRight, CircleCheck, CircleX, Gauge, ListChecks, Plus } from "lucide-react";
+import { ChevronRight, CircleCheck, CircleX, Gauge, ListChecks } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
-import { useShell } from "../../app/layout/ShellContext";
-import { buildDailyActivity, buildPassRateTrend, buildProjectStats, computeKpis, projectById } from "../../lib/demo/data";
+import { buildDailyActivity, buildPassRateTrend, buildProjectStats, computeKpis, projectById, runTrigger } from "../../lib/demo/data";
 import type { DayActivity } from "../../lib/demo/data";
 import { formatCompact, formatNumber, formatPercent, healthDotClass, healthFromRate } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
@@ -17,9 +16,14 @@ import { PageHeader } from "../../shared/ui/PageHeader";
 import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
 import { ProjectIcon } from "../projects/ProjectIcon";
-import { useRunColumns } from "../runs/runColumns";
+import { useRunStatsColumns } from "../runs/runColumns";
+import { GlobalBranchSwitcher } from "./GlobalBranchSwitcher";
 
 type Range = "7" | "14" | "30";
+
+/** Rows per page in the Recent test runs table — paged instead of
+ *  hard-truncated. */
+const RUNS_PAGE_SIZE = 10;
 
 function deltaInfo(value: number, goodWhenUp: boolean, suffix: string): KpiDelta {
   return {
@@ -32,25 +36,41 @@ function deltaInfo(value: number, goodWhenUp: boolean, suffix: string): KpiDelta
 export function OverviewPage() {
   const { runs } = useDemoState();
   const { navigate } = useRoute();
-  const { openNewRun } = useShell();
   const { t } = useT();
   const [range, setRange] = useState<Range>("30");
+  const [runsPage, setRunsPage] = useState(1);
   const days = Number(range);
 
   const kpis = useMemo(() => computeKpis(runs, days), [runs, days]);
   const activity = useMemo(() => buildDailyActivity(runs, days), [runs, days]);
   const rateTrend = useMemo(() => buildPassRateTrend(runs, days), [runs, days]);
   const projectStats = useMemo(
-    () => buildProjectStats(runs, 30).sort((a, b) => a.successRate - b.successRate),
+    // Same rule as Reports: no completed run in the window is "no data",
+    // not 0% — an unrun project must not surface as the worst performer.
+    () => buildProjectStats(runs, 30).filter((stat) => stat.runs > 0).sort((a, b) => a.successRate - b.successRate),
     [runs]
   );
-  const runColumns = useRunColumns((run) => navigate(`/runs/${run.id}`));
+  const runColumns = useRunStatsColumns();
+  // Projects with a live runner run — their health row gets the sweep.
+  // Trigger resolves through runTrigger(): gateway-loaded rows (every
+  // post-reload read) carry no trigger field, so a direct read went dark.
+  const runningProjectIds = useMemo(
+    () => new Set(runs.filter((run) => runTrigger(run) === "runner" && run.status === "running").map((run) => run.projectId)),
+    [runs]
+  );
 
   const rangeOptions: SegmentOption<Range>[] = [
     { id: "7", label: t("overview.range7") },
     { id: "14", label: t("overview.range14") },
     { id: "30", label: t("overview.range30") }
   ];
+
+  // Recent runs paging — clamped so a live update that adds/removes rows
+  // (new run lands, run finishes) can never leave the page out of range.
+  const runsTotalPages = Math.max(1, Math.ceil(runs.length / RUNS_PAGE_SIZE));
+  const safeRunsPage = Math.min(runsPage, runsTotalPages);
+  const runsStart = (safeRunsPage - 1) * RUNS_PAGE_SIZE;
+  const visibleRuns = runs.slice(runsStart, runsStart + RUNS_PAGE_SIZE);
 
   const hasActivity = activity.some((day) => day.passed + day.failed > 0);
   const totalPassed = activity.reduce((sum, day) => sum + day.passed, 0);
@@ -61,17 +81,12 @@ export function OverviewPage() {
   return (
     <section>
       <PageHeader
-        actions={(
-          <>
-            <Segmented onChange={(id) => setRange(id)} options={rangeOptions} value={range} />
-            <button className="primary-button" onClick={openNewRun}>
-              <Plus size={16} /> {t("overview.newRun")}
-            </button>
-          </>
-        )}
+        actions={<Segmented onChange={(id) => setRange(id)} options={rangeOptions} value={range} />}
         subtitle={t("overview.subtitle")}
         title={t("overview.title")}
       />
+
+      <GlobalBranchSwitcher />
 
       <div className="kpis">
         <KpiCard
@@ -145,12 +160,19 @@ export function OverviewPage() {
             <button className="link-button" onClick={() => navigate("/projects")}>{t("common.viewAll")}</button>
           </div>
           <div className="health-list">
-            {projectStats.slice(0, 5).map((stat) => {
+            {projectStats.length === 0 ? (
+              <p className="muted">{t("suite.noRuns")}</p>
+            ) : (
+              projectStats.slice(0, 5).map((stat) => {
               const project = projectById(stat.projectId);
               if (!project) return null;
               const health = healthFromRate(stat.successRate);
               return (
-                <button className="health-row" key={stat.projectId} onClick={() => navigate(`/projects/${project.id}`)}>
+                <button
+                  className={`health-row${runningProjectIds.has(stat.projectId) ? " health-row-running" : ""}`}
+                  key={stat.projectId}
+                  onClick={() => navigate(`/projects/${project.id}`)}
+                >
                   <ProjectIcon icon={project.icon} />
                   <span className="health-row-name">{project.name}</span>
                   <span className={`health-dot ${healthDotClass(health.tone)}`} />
@@ -159,7 +181,8 @@ export function OverviewPage() {
                   <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
                 </button>
               );
-            })}
+              })
+            )}
           </div>
         </div>
       </div>
@@ -171,7 +194,38 @@ export function OverviewPage() {
           </div>
           <button className="link-button" onClick={() => navigate("/runs")}>{t("common.viewAll")}</button>
         </div>
-        <DataTable columns={runColumns} onRowClick={(run) => navigate(`/runs/${run.id}`)} rows={runs.slice(0, 8)} />
+        {/* ?from tells the run page which trail to draw: from here it is
+            Overview › project › run, from the Test runs board it stays
+            Test runs › run. */}
+        <DataTable columns={runColumns} fixed onRowClick={(run) => navigate(`/runs/${run.id}?from=overview`)} rows={visibleRuns} />
+        {runsTotalPages > 1 ? (
+          <div className="pagination">
+            <span className="pagination-count">
+              {runsStart + 1}–{Math.min(runsStart + RUNS_PAGE_SIZE, runs.length)} / {runs.length}
+            </span>
+            <div className="pagination-controls">
+              <button
+                className="secondary-button"
+                disabled={safeRunsPage <= 1}
+                onClick={() => setRunsPage(Math.max(1, safeRunsPage - 1))}
+                type="button"
+              >
+                {t("users.prevPage")}
+              </button>
+              <span>
+                {t("users.page")} {safeRunsPage} {t("users.of")} {runsTotalPages}
+              </span>
+              <button
+                className="secondary-button"
+                disabled={safeRunsPage >= runsTotalPages}
+                onClick={() => setRunsPage(Math.min(runsTotalPages, safeRunsPage + 1))}
+                type="button"
+              >
+                {t("users.nextPage")}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </section>
   );

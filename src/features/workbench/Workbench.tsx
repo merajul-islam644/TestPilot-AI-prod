@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { PanelLeft } from "lucide-react";
 import { ActivityBar } from "./components/ActivityBar";
-import { BranchPicker } from "./components/BranchPicker";
+import { BranchBar } from "./components/BranchBar";
 import { ExplorerView } from "./components/ExplorerView";
 import { SearchView } from "./components/SearchView";
 import { SourceControlView } from "./components/SourceControlView";
@@ -273,15 +273,11 @@ export function Workbench({ project }: { project: Project }) {
               <SourceControlView
                 busy={ws.saving || ws.opening || ws.gitBusy}
                 dirtyPaths={ws.gitDirtyPaths}
-                branches={gitBranches.branches}
-                branchesNote={gitBranches.note}
                 gitBranch={ws.gitBranch}
                 gitTick={ws.gitTick}
                 onReloadBranches={gitBranches.reload}
                 root={ws.root}
-                onCheckout={(name) => ws.checkoutBranch(name)}
                 onCommit={(paths, message) => ws.commitWorkspace(paths, message)}
-                onCreateBranch={(name) => ws.createBranch(name)}
                 onOpenDiff={(path) => workbenchStore.openDiff(path)}
                 onPull={() => ws.pullWorkspace()}
                 onPush={() => ws.pushWorkspace()}
@@ -305,16 +301,20 @@ export function Workbench({ project }: { project: Project }) {
                 running={ws.running}
               />
             ) : null}
-            {/* Always-on branch bar: the switcher stays in Source Control;
-                this pinned copy keeps the active branch visible — and
-                switchable — from every sidebar view, VS Code status-bar
-                style. Hidden when the folder is not a git clone. */}
+            {/* The branch section lives HERE — pinned to the sidebar's foot
+                (switcher + new-branch + reload), so it stays visible and
+                usable from every view (explorer, search, SCM, run), VS Code
+                status-bar style. Source Control carries no branch section
+                anymore. Hidden when the folder is not a git clone. */}
             {ws.root && ws.gitBranch ? (
               <div className="wb-sidebar-branch">
-                <BranchPicker
+                <BranchBar
                   branches={gitBranches.branches}
-                  disabled={ws.saving || ws.opening || ws.gitBusy}
-                  onChange={(name) => void ws.checkoutBranch(name)}
+                  branchesNote={gitBranches.note}
+                  busy={ws.saving || ws.opening || ws.gitBusy}
+                  onCheckout={(name) => ws.checkoutBranch(name)}
+                  onCreateBranch={(name) => ws.createBranch(name)}
+                  onReload={gitBranches.reload}
                   value={ws.gitBranch}
                 />
               </div>

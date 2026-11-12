@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Plus, Search } from "lucide-react";
+import { ArrowLeft, Play, Search } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
 import { derivedSuiteForProject, projectById } from "../../lib/demo/data";
 import type { RunStatus } from "../../lib/demo/data";
@@ -20,6 +20,7 @@ import { ChartCard, ChartLegend } from "../../shared/charts/ChartCard";
 import { StackedColumns } from "../../shared/charts/StackedColumns";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
+import { Breadcrumb } from "../../shared/ui/Breadcrumb";
 import { CaseTree } from "../../shared/ui/CaseTree";
 import { Select } from "../../shared/ui/select";
 import { StatusBadge, SuiteStatusBadge } from "../../shared/ui/StatusBadge";
@@ -83,7 +84,7 @@ export function ProjectDetailPage() {
   const [tab, setTabState] = useState<Tab>(initialTab);
   const [drill, setDrill] = useState<Drill | null>(initialDrill);
   const [startingRun, setStartingRun] = useState(false);
-  // This page IS the project scope, so its New test run skips the global
+  // This page IS the project scope, so its Run Tests skips the global
   // modal and dispatches this project's Playwright specs straight away.
   // It can only do that with an open runner-mode folder holding specs —
   // anything else (no folder, browser-picked folder, zero specs) keeps the
@@ -307,8 +308,14 @@ export function ProjectDetailPage() {
         // The dispatch already created a Running record, so this failure must
         // surface: a silent catch here once ate the runner's "could not load
         // the specs" 422 and the run just sat there with nothing to explain it.
+        // A user cancel is not a failure — the runner answers the cancelled
+        // dispatch with its own "Run cancelled" rejection and the store has
+        // already parked the row, so no error toast (same policy as the
+        // workbench console's cancel branch).
+        const message = error instanceof Error ? error.message : String(error);
+        if (/\bcancel/i.test(message)) return;
         toast.error(t("toast.runnerFailed"), {
-          description: error instanceof Error ? error.message.slice(0, 400) : undefined
+          description: message.slice(0, 400)
         });
       });
       setStartingRun(false);
@@ -321,30 +328,29 @@ export function ProjectDetailPage() {
     }
   }
 
+  // Trail labels for the drilled run/issue — resolved here so the JSX
+  // below stays flat; the id is the fallback while a record is missing.
+  const drilledRun = drill?.kind === "run" ? runs.find((entry) => entry.id === drill.id) : undefined;
+  const drilledIssue = drill?.kind === "issue" ? issues.find((entry) => entry.id === drill.id) : undefined;
+
   return (
     <section>
       {/* One Back at a time: while a run/issue/suite detail is drilled in,
           only its own Back (which closes the drill) shows — two identical
           Backs stacked read as a bug. The project Back returns when the
           drill closes. */}
-      {/* Compact title bar: a bare back arrow and the project name share ONE
-          row. Health badge, tags and the Back label all lived here before,
-          but nothing functioned off them and the bar read as noise. While a
-          drill is open the bar hides entirely — the drill carries its own
-          compact titlebar, and the project name already rides in its chips. */}
+      {/* Same breadcrumb system as the other menus: Projects › <project>,
+          rendered inside the section so the left edge aligns. It replaces
+          the old back arrow + repeated heading on the top level; while a
+          drill is open nothing shows here — the drill carries its own
+          titlebar, and the project name already rides in its chips. */}
       {!drill ? (
-        <div className="titlebar">
-          <button
-            aria-label={t("common.back")}
-            className="tertiary-button"
-            onClick={() => navigate("/projects")}
-            title={t("common.back")}
-            type="button"
-          >
-            <ArrowLeft size={16} />
-          </button>
-          <h2>{project.name}</h2>
-        </div>
+        <Breadcrumb
+          items={[
+            { label: t("nav.projects"), onClick: () => navigate("/projects") },
+            { label: project.name }
+          ]}
+        />
       ) : null}
 
       {/* A drilled detail replaces the tabs AND tab content entirely — the
@@ -352,12 +358,29 @@ export function ProjectDetailPage() {
       {drill ? (
         drill.kind === "run" ? (
           <RunDetailView
+            /* Same breadcrumb system as the sidebar routes: the trail is
+                <project> › <run> — the first crumb walks back to the tabs
+                (closeDrill), so the back arrow + repeated heading go away
+                and only the start time + cancel remain on the row. */
+            crumbs={[
+              { label: project.name, onClick: closeDrill },
+              { label: drilledRun?.name ?? drill.id }
+            ]}
+            hideHeader
             onBack={closeDrill}
             onOpenIssue={(issueId) => openDrill("issue", issueId)}
             runId={drill.id}
           />
         ) : drill.kind === "issue" ? (
           <IssueDetailView
+            /* <project> › <issue title> — same system: the first crumb is
+                the way back to the tabs, the titlebar yields to the trail,
+                and the id + status actions stay pinned to the right. */
+            crumbs={[
+              { label: project.name, onClick: closeDrill },
+              { label: drilledIssue?.title ?? drill.id }
+            ]}
+            hideHeader
             issueId={drill.id}
             onBack={closeDrill}
             onOpenRun={(runId) => openDrill("run", runId)}
@@ -385,7 +408,7 @@ export function ProjectDetailPage() {
                 title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
                 type="button"
               >
-                <Plus size={16} /> {startingRun ? t("newRun.starting") : t("overview.newRun")}
+                <Play size={16} /> {startingRun ? t("newRun.starting") : t("overview.newRun")}
               </button>
             )}
             onChange={setTab}
@@ -462,7 +485,7 @@ export function ProjectDetailPage() {
               <h3 className="panel-title">{t("projects.tabRuns")}</h3>
               <button className="link-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
             </div>
-            <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 6)} />
+            <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 6)} />
           </div>
           </div>
         </>
@@ -489,7 +512,7 @@ export function ProjectDetailPage() {
               </div>
             </div>
             {filteredRuns.length > 0 ? (
-              <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={filteredRuns} />
+              <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={filteredRuns} />
             ) : (
               <EmptyState description={t("common.notFound")} title={t("runs.empty")} />
             )}
@@ -510,7 +533,7 @@ export function ProjectDetailPage() {
             <div className="stack">
             {/* Suite hero: what the derived suite IS (specs + folder) and its
                 two actions. Run suite reuses the tab-level direct dispatch,
-                so it obeys the same disabled rules as New test run. */}
+                so it obeys the same disabled rules as Run Tests. */}
             <div className="panel">
               <div className="suite-hero">
                 <div style={{ minWidth: 0 }}>
@@ -533,7 +556,7 @@ export function ProjectDetailPage() {
                     title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
                     type="button"
                   >
-                    {startingRun ? t("newRun.starting") : t("suite.runNow")}
+                    <Play size={16} /> {startingRun ? t("newRun.starting") : t("suite.runNow")}
                   </button>
                 </div>
               </div>
@@ -561,7 +584,7 @@ export function ProjectDetailPage() {
                 <button className="link-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
               </div>
               {projectRuns.length > 0 ? (
-                <DataTable columns={runColumns} onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 5)} />
+                <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 5)} />
               ) : (
                 <p className="muted">{t("suite.noRuns")}</p>
               )}

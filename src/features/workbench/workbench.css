@@ -433,6 +433,44 @@ body.wb-resizing .wb-sidebar { transition: none; }
 .wb-run-subtitle { font-size: 12.5px; line-height: 1.5; margin: 0; }
 .wb-run-url { width: 100%; }
 .wb-run-btn { justify-content: center; width: 100%; }
+/* Configuration card: subtitle + Base URL + the run action read as one
+   bordered unit instead of a loose stack of texts. */
+.wb-run-config {
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+/* Workspace shape as count tiles — the numbers read at a glance. */
+.wb-run-stats { display: flex; gap: 8px; }
+.wb-run-stat {
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.wb-run-stat-num { font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.wb-run-stat-label { color: hsl(var(--muted-foreground)); font-size: 11px; margin-top: 2px; }
+/* Runner liveness row: dot + state + the URL it answers on. */
+.wb-run-status {
+  align-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  display: flex;
+  gap: 9px;
+  padding: 9px 10px;
+}
+.wb-run-status-text { display: flex; flex-direction: column; font-size: 12.5px; gap: 1px; min-width: 0; }
+.wb-run-status-url {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wb-run-meta {
   align-items: center;
   display: flex;
@@ -1344,32 +1382,32 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
 .wb-scm-row:hover .wb-scm-row-actions,
 .wb-scm-row:focus-within .wb-scm-row-actions { opacity: 1; }
 
-/* branch picker row + inline create-branch form */
-.wb-scm-branch-row { align-items: center; display: flex; gap: 4px; }
-.wb-scm-branch-row .wb-scm-select { flex: 1; min-width: 0; }
-.wb-scm-branch-row .wb-scm-input { flex: 1; width: auto; }
+/* (the SCM pane's own branch row is gone — switching/creating/reloading
+   live in the pinned BranchBar at the sidebar's foot, below) */
 
 /* Branch picker: trigger + searchable fixed-position popover (VS Code's
-   branch quick-pick). The popover escapes wb-scm-body's overflow clip. */
+   branch quick-pick). The popover escapes any overflow clip — the bar's
+   foot position included. */
 .wb-branch-picker { flex: 1; min-width: 0; position: relative; }
-/* Own specificity beats ".wb-scm-branch-row .wb-scm-input" (width:auto),
-   which would otherwise shrink the trigger to its label. */
 .wb-branch-picker .wb-branch-trigger { align-items: center; cursor: pointer; display: flex; gap: 6px; justify-content: space-between; width: 100%; }
 
 /* ---------- sidebar branch bar ---------- */
-/* The SCM section keeps its switcher; this pinned bar at the sidebar's
-   foot mirrors it so the active branch is visible — and switchable —
-   from every view (explorer, search, run), like VS Code's status bar. */
+/* The whole branch section (switcher + new-branch + reload) lives HERE,
+   pinned to the sidebar's foot so it is visible — and usable — from
+   every view (explorer, search, SCM, run), like VS Code's status bar.
+   Column so a branch-list failure note can stack under the picker row. */
 .wb-sidebar-branch {
-  align-items: center;
   border-top: 1px solid hsl(var(--border));
   color: hsl(var(--muted-foreground));
   display: flex;
   flex: none;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 8px;
 }
+.wb-sidebar-branch-row { align-items: center; display: flex; gap: 4px; min-width: 0; }
 .wb-sidebar-branch .wb-branch-picker { color: hsl(var(--foreground)); }
+.wb-sidebar-branch .wb-scm-note { margin: 0; }
 /* The branch glyph rides INSIDE the trigger, left of the name — both the
    SCM row and the pinned sidebar bar get it from the same component. */
 .wb-branch-trigger .wb-branch-icon { color: hsl(var(--muted-foreground)); flex: none; }
@@ -1407,9 +1445,13 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
 .wb-branch-item:hover, .wb-branch-item.active { background: hsl(var(--secondary)); }
 .wb-branch-name { font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Inline create-branch form (BranchBar's create state). min-width:0 is
+   the load-bearing bit: a flex item's default min-width:auto holds the
+   input at its intrinsic ~20-char width, shoving Create + the cancel ✕
+   out past the narrow sidebar's edge. */
 .wb-scm-branch-create { align-items: center; display: flex; gap: 4px; }
-.wb-scm-branch-create .wb-scm-input { flex: 1; width: auto; }
-.wb-scm-btn-inline { flex: none; margin-top: 0; width: auto; }
+.wb-scm-branch-create .wb-scm-input { flex: 1; min-width: 0; width: auto; }
+.wb-scm-btn-inline { flex: none; margin-top: 0; white-space: nowrap; width: auto; }
 .wb-scm-note { color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.45; margin: 5px 0 0; overflow-wrap: anywhere; }
 
 /* token field with show/hide + the signed-in chip */
@@ -1417,20 +1459,70 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
 .wb-scm-token .wb-scm-input { flex: 1; width: auto; }
 .wb-scm-verified { align-items: center; color: hsl(var(--success-fg)); display: inline-flex; font-size: 11px; font-weight: 600; gap: 4px; margin-top: 5px; }
 
-/* branch commit history */
-.wb-scm-history { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; }
+/* Branch commit history — one branch, so an honest straight graph rail:
+   a vertical line threading a node per commit (the first node is HEAD,
+   highlighted). The line runs li-edge to li-edge, trimmed to the node
+   center at both ends, so the rows can sit flush with no gaps. */
+.wb-scm-history { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 2px 0; }
+.wb-scm-commit { position: relative; }
+.wb-scm-commit::before {
+  background: hsl(var(--border));
+  bottom: 0;
+  content: "";
+  left: 9px;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+.wb-scm-commit:first-child::before { top: 13px; }
+.wb-scm-commit:last-child::before { bottom: calc(100% - 13px); }
+.wb-scm-commit::after {
+  background: hsl(var(--muted-foreground));
+  border-radius: 50%;
+  content: "";
+  height: 7px;
+  left: 6px;
+  position: absolute;
+  top: 10px;
+  width: 7px;
+}
+.wb-scm-commit:first-child::after {
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18);
+}
 .wb-scm-commit-row {
+  align-items: center;
+  background: none;
+  border: 0;
   border-radius: 6px;
   color: hsl(var(--foreground));
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 5px 6px;
-  text-decoration: none;
+  column-gap: 8px;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 5px 6px 5px 22px;
+  row-gap: 1px;
+  text-align: left;
+  width: 100%;
 }
 .wb-scm-commit-row:hover { background: hsl(var(--accent)); }
+.wb-scm-commit-row:disabled { cursor: default; opacity: 0.5; }
 .wb-scm-commit-msg { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wb-scm-commit-meta { color: hsl(var(--muted-foreground)); font-size: 11px; }
+.wb-scm-commit-sha {
+  background: hsl(var(--secondary));
+  border-radius: 4px;
+  color: hsl(var(--muted-foreground));
+  flex: none;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  padding: 1px 5px;
+}
+.wb-scm-commit-meta,
+.wb-scm-commit-author,
+.wb-scm-commit-when { color: hsl(var(--muted-foreground)); font-size: 11px; }
+.wb-scm-commit-author { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-scm-commit-when { flex: none; text-align: right; }
 
 /* ---------- small screens ---------- */
 

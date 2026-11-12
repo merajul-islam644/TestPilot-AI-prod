@@ -8,7 +8,9 @@
 import { createContext, useContext } from "react";
 
 export type RouteParams = Record<string, string>;
-export type RouteState = { navigate: (to: string) => void; params: RouteParams; path: string };
+/** `search` carries the raw query string (no "?") so detail pages can read
+ *  trail hints like ?from=overview without touching window.location. */
+export type RouteState = { navigate: (to: string) => void; params: RouteParams; path: string; search: string };
 
 export const RouteContext = createContext<RouteState | undefined>(undefined);
 

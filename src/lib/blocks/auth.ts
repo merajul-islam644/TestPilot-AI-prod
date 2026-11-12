@@ -208,9 +208,28 @@ export async function logout(): Promise<void> {
 // previous org's data with the new session silently in place.
 
 export async function switchOrganization(organizationId: string): Promise<void> {
-  const data = await blocksClient.auth.switchOrganization({ organizationId });
+  // Hand over the app's own refresh token explicitly (the canonical
+  // org-switch flow): IAM falls back to the session cookie's refresh token
+  // when it is absent, but a body-token tenant must pass it or the switch
+  // cannot re-issue the grant. undefined simply drops out of the JSON, so
+  // cookie-only sessions are unaffected.
+  const data = await blocksClient.auth.switchOrganization({ organizationId, refreshToken: cachedRefreshToken });
   const accessToken = data.access_token ?? data.accessToken;
-  if (accessToken) persistTokens(accessToken, data.refresh_token ?? data.refreshToken);
+  if (accessToken) {
+    // The response carries body tokens — adopt the new org's session
+    // wholesale, exactly like completeLogin does.
+    persistTokens(accessToken, data.refresh_token ?? data.refreshToken);
+  } else {
+    // Cookie flow: the Set-Cookie IS the new session, but any bearer token
+    // cached from the PREVIOUS org (login-time body tokens kept in memory /
+    // sessionStorage) still names the old org — IAM honors it over the
+    // cookie, so later calls keep answering with the previous org's claims
+    // and silently undo the switch. Drop the cache so every call goes
+    // cookie-only against the new session. (Blocks org-switch gotcha: "a
+    // stale access token after switching orgs will produce confusing
+    // wrong-org data on the next call.")
+    clearLocalTokens();
+  }
 }
 
 // --- Account self-service ----------------------------------------------------

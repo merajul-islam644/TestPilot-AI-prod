@@ -36,7 +36,7 @@ import { runPlaywrightTests, subscribeRunnerProgress, useActiveRunnerRun } from 
 import type { PlaywrightRunOutcome } from "../../../lib/demo/store";
 import * as cloud from "../../../lib/blocks/data";
 import { useT } from "../../../lib/i18n/LocalizationProvider";
-import { cancelRunnerRun, pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/client";
+import { cancelRunnerRun, fetchRunnerEnvBaseURL, pingRunner, RUNNER_MAX_FILES, runnerUrl } from "../../../lib/runner/client";
 import type { RunnerRunProgress } from "../../../lib/runner/client";
 import { localFolder } from "../../../lib/workspace/localFolder";
 import type { SearchResponse } from "../../../lib/workspace/localFolder";
@@ -462,6 +462,26 @@ export function useTestWorkspace(project: Project) {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [running]);
+
+  // The Base URL field mirrors what a run will ACTUALLY target: the
+  // workspace's own E2E_BASE_URL (the /run contract — its .env files win
+  // over the request's manual value). While the field still shows the
+  // untouched default, adopt that value so the panel shows the real app
+  // under test instead of the placeholder; a URL the user typed is never
+  // clobbered. Re-runs when the load settles, because loadFolder resets
+  // the field to the saved/default value after this fetch may have
+  // resolved. FSA workspaces have no runner root — skipped.
+  useEffect(() => {
+    if (!root || fsaRoot) return;
+    let cancelled = false;
+    void fetchRunnerEnvBaseURL(root).then((url) => {
+      if (cancelled || !url) return;
+      setBaseURL((current) => (current === DEFAULT_BASE_URL ? url : current));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, fsaRoot, loaded]);
 
   const dirtyPaths = useMemo(
     // Only loaded files can be dirty: an unopened file was never edited

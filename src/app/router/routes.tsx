@@ -21,6 +21,7 @@ import { SuitesPage } from "../../features/suites/SuitesPage";
 import { SuiteDetailPage } from "../../features/suites/SuiteDetailPage";
 import { IssuesPage } from "../../features/issues/IssuesPage";
 import { IssueDetailPage } from "../../features/issues/IssueDetailPage";
+import { IssuesProjectPage } from "../../features/issues/IssuesProjectPage";
 import { ReportsPage } from "../../features/reports/ReportsPage";
 import { SettingsPage } from "../../features/settings/SettingsPage";
 import { HelpPage } from "../../features/help/HelpPage";
@@ -41,6 +42,7 @@ const routes: RouteDef[] = [
   { component: SuitesPage, params: [], segments: ["suites"] },
   { component: SuiteDetailPage, params: ["suiteId"], segments: ["suites", ":suiteId"] },
   { component: IssuesPage, params: [], segments: ["issues"] },
+  { component: IssuesProjectPage, params: ["projectId"], segments: ["issues", "project", ":projectId"] },
   { component: IssueDetailPage, params: ["issueId"], segments: ["issues", ":issueId"] },
   { component: ReportsPage, params: [], segments: ["reports"] },
   { component: SettingsPage, params: [], segments: ["settings"] },
@@ -91,7 +93,7 @@ export function AppRouter() {
   }, []);
 
   const match = useMemo(() => matchRoute(path), [path]);
-  const routeState = useMemo<RouteState>(() => ({ navigate, params: match?.params ?? {}, path }), [match, navigate, path]);
+  const routeState = useMemo<RouteState>(() => ({ navigate, params: match?.params ?? {}, path, search }), [match, navigate, path, search]);
 
   if (path === "/login/callback") {
     return <CallbackPage onNavigate={navigate} />;

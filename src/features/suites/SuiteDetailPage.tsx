@@ -8,6 +8,7 @@ export function SuiteDetailPage() {
   const { params, navigate } = useRoute();
   return (
     <SuiteDetailView
+      contentOnly
       suiteId={params.suiteId ?? ""}
       onBack={() => navigate("/suites")}
       onOpenRun={(runId) => navigate(`/runs/${runId}`)}

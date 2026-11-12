@@ -1,10 +1,11 @@
 // Source Control sidebar view -- the workbench's Git layer, laid out
 // like VS Code's SCM pane, powered by LOCAL git on the open folder's
-// clone (no GitHub API, no tokens): a branch picker that switches the
-// open clone, a commit box on TOP (message + Ctrl+Enter), a STAGED
-// CHANGES / CHANGES pair with per-file stage (+) / unstage (−) /
-// discard on hover, stash and merge-conflict sections, and the branch's
-// commit history. Only staged files go into a commit (`git commit --
+// clone (no GitHub API, no tokens): a commit box on TOP (message +
+// Ctrl+Enter), a STAGED CHANGES / CHANGES pair with per-file stage (+) /
+// unstage (−) / discard on hover, stash and merge-conflict sections, and
+// the branch's commit history. Branch switching/creation/reload lives in
+// the pinned bar at the sidebar's foot (BranchBar), visible from every
+// view — the SCM pane no longer carries its own branch section. Only staged files go into a commit (`git commit --
 // paths`); pushing and pulling are separate actions, like VS Code.
 //
 // Authentication is the machine's own git credential helper — exactly
@@ -22,18 +23,15 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  GitBranch,
   Minus,
   PanelLeftClose,
   Plus,
   RefreshCw,
   Save,
   Trash2,
-  Undo2,
-  X
+  Undo2
 } from "lucide-react";
 import { ConfirmDialog } from "../../../shared/ui/ConfirmDialog";
-import { BranchPicker } from "./BranchPicker";
 import { formatRelative } from "../../../lib/format";
 import { localFolder } from "../../../lib/workspace/localFolder";
 import type { GitStashRow } from "../../../lib/workspace/localFolder";
@@ -42,7 +40,7 @@ import { fileIconElement } from "../icons/fileIcon";
 /** One row of the local branch's history (`git log`). */
 type LocalCommit = { sha: string; subject: string; author: string; date: string };
 
-export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, branches, branchesNote, onReloadBranches, onOpenDiff, onRevert, onSaveAll, onPull, onPush, onCommit, onCheckout, onCreateBranch, onToggleSidebar }: {
+export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, onReloadBranches, onOpenDiff, onRevert, onSaveAll, onPull, onPush, onCommit, onToggleSidebar }: {
   dirtyPaths: Set<string>;
   /** Saving, opening a folder or a git op in flight -- disables the actions. */
   busy: boolean;
@@ -53,13 +51,8 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   /** Bumped after each successful git mutation — re-reads branches and
    *  history even when the branch itself didn't change (commit/pull/push). */
   gitTick: number;
-  /** All branches of the clone — locals first, then origin/*. Owned by
-   *  the shared useGitBranches hook so this section and the sidebar's
-   *  bottom branch bar render the same list from one fetch. */
-  branches: string[];
-  /** Non-empty when the branch list failed to load. */
-  branchesNote: string;
-  /** Re-run the branch-list fetch (the header's reload button). */
+  /** Re-run the branch-list fetch — the header's refresh button folds
+   *  it in (the branch bar itself reloads directly via BranchBar). */
   onReloadBranches: () => void;
   /** VS Code SCM behaviour: clicking a change opens it as a diff
    *  editor (baseline ↔ current edits), not a plain editor. */
@@ -71,19 +64,11 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   onPush: () => Promise<void>;
   /** Commit the staged files; true when the commit landed. */
   onCommit: (paths: string[], message: string) => Promise<boolean>;
-  /** Switch the clone's branch; the workspace reloads afterwards. */
-  onCheckout: (name: string) => Promise<void>;
-  /** Create a local branch off HEAD and switch; true when created. */
-  onCreateBranch: (name: string) => Promise<boolean>;
   onToggleSidebar: () => void;
 }) {
   const [message, setMessage] = useState("");
   /** The index, VS Code style: rows here are the next commit. */
   const [staged, setStaged] = useState<Set<string>>(() => new Set());
-
-  const [creating, setCreating] = useState(false);
-  const [newBranch, setNewBranch] = useState("");
-  const [creatingBranch, setCreatingBranch] = useState(false);
 
   const [history, setHistory] = useState<LocalCommit[]>([]);
   const [historyNote, setHistoryNote] = useState("");
@@ -91,7 +76,6 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
 
   const [openStaged, setOpenStaged] = useState(true);
   const [openChanges, setOpenChanges] = useState(true);
-  const [openBranch, setOpenBranch] = useState(true);
   const [openHistory, setOpenHistory] = useState(true);
   const [confirmingDiscardAll, setConfirmingDiscardAll] = useState(false);
 
@@ -269,19 +253,20 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
     }
   }
 
-  async function onCreateLocal() {
-    const name = newBranch.trim();
-    if (!name || creatingBranch) return;
-    const ok = await onCreateBranch(name);
-    if (ok) {
-      setCreating(false);
-      setNewBranch("");
-    }
-  }
-
   function commitWhen(info: LocalCommit): string {
     const ts = Date.parse(info.date);
     return Number.isFinite(ts) ? formatRelative(ts) : "";
+  }
+
+  /** Click a history row: the full sha lands on the clipboard — handy
+   *  for cherry-picks and lookups outside the app. */
+  async function copySha(commit: LocalCommit) {
+    try {
+      await navigator.clipboard.writeText(commit.sha);
+      toast.success(`Copied ${commit.sha.slice(0, 7)}`);
+    } catch {
+      toast.error("Could not copy the commit sha");
+    }
   }
 
   function collapsibleKey(event: React.KeyboardEvent) {
@@ -346,67 +331,6 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
             {busy ? "Working…" : `Commit${stagedPaths.length > 0 ? ` (${stagedPaths.length})` : ""}`}
           </button>
         </div>
-
-        {gitBranch ? (
-          <section className="wb-scm-section">
-            <div
-              className="wb-scm-heading wb-scm-collapsible"
-              onClick={() => setOpenBranch((v) => !v)}
-              onKeyDown={(event) => {
-                collapsibleKey(event);
-                if (event.key === "Enter" || event.key === " ") setOpenBranch((v) => !v);
-              }}
-              role="button"
-              tabIndex={0}
-            >
-              <span className="wb-scm-chev">{openBranch ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
-              <GitBranch size={13} />
-              Branch <span className="wb-scm-count">{gitBranch}</span>
-              <span className="wb-scm-heading-actions" onClick={(event) => event.stopPropagation()}>
-                <button aria-label="New branch" className="wb-icon-btn" disabled={busy || creating} onClick={() => setCreating(true)} title="Create a branch and switch to it" type="button">
-                  <Plus size={13} />
-                </button>
-                <button aria-label="Reload branch list" className="wb-icon-btn" disabled={busy} onClick={onReloadBranches} title="Reload branch list" type="button">
-                  <RefreshCw size={13} />
-                </button>
-              </span>
-            </div>
-            {openBranch ? (
-              <>
-                {creating ? (
-                  <div className="wb-scm-branch-create">
-                    <input
-                      className="wb-scm-input"
-                      onChange={(event) => setNewBranch(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && newBranch.trim()) void onCreateLocal();
-                      }}
-                      placeholder="new-branch-name"
-                      spellCheck={false}
-                      value={newBranch}
-                    />
-                    <button className="wb-scm-btn wb-scm-btn-inline" disabled={creatingBranch || !newBranch.trim()} onClick={() => void onCreateLocal()} type="button">
-                      {creatingBranch ? "Creating…" : "Create"}
-                    </button>
-                    <button aria-label="Cancel new branch" className="wb-icon-btn" onClick={() => { setCreating(false); setNewBranch(""); }} title="Cancel" type="button">
-                      <X size={13} />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="wb-scm-branch-row">
-                    <BranchPicker
-                      branches={branches}
-                      disabled={busy || creating}
-                      onChange={(name) => void onCheckout(name)}
-                      value={gitBranch}
-                    />
-                  </div>
-                )}
-                {branchesNote ? <p className="wb-scm-note">{branchesNote}</p> : null}
-              </>
-            ) : null}
-          </section>
-        ) : null}
 
         {conflicts.length > 0 ? (
           <section className="wb-scm-section wb-scm-conflicts" role="alert">
@@ -550,7 +474,7 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
             </div>
             {openChanges ? (
               unstagedPaths.length === 0 ? (
-                <p className="wb-scm-empty">No changes. Edit a file and it shows up here, like VS Code's SCM list.</p>
+                <p className="wb-scm-empty" style={{ textAlign: "center" }}>No changes.</p>
               ) : (
                 <ul className="wb-scm-list">
                   {unstagedPaths.map((path) => (
@@ -600,17 +524,24 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
               history.length === 0 ? (
                 <p className="wb-scm-empty">{historyNote || "No commits on this branch yet."}</p>
               ) : (
+                /* One branch = one straight rail: the CSS draws the line
+                   and a node per row (the first node is HEAD, highlighted).
+                   Row grid: subject + sha chip on line 1, author + when on
+                   line 2. Clicking copies the full sha. */
                 <ul className="wb-scm-history">
                   {history.map((commit) => (
-                    <li key={commit.sha}>
-                      <span className="wb-scm-commit-row" title={`${commit.subject}${commit.author ? `\n${commit.author}` : ""}`}>
+                    <li className="wb-scm-commit" key={commit.sha}>
+                      <button
+                        className="wb-scm-commit-row"
+                        onClick={() => void copySha(commit)}
+                        title={`${commit.subject}${commit.author ? `\n${commit.author}` : ""}${commitWhen(commit) ? ` · ${commitWhen(commit)}` : ""}\nClick to copy the full sha`}
+                        type="button"
+                      >
                         <span className="wb-scm-commit-msg">{commit.subject || commit.sha.slice(0, 7)}</span>
-                        <span className="wb-scm-commit-meta">
-                          {commit.sha.slice(0, 7)}
-                          {commit.author ? ` · ${commit.author}` : ""}
-                          {commitWhen(commit) ? ` · ${commitWhen(commit)}` : ""}
-                        </span>
-                      </span>
+                        <span className="wb-scm-commit-sha">{commit.sha.slice(0, 7)}</span>
+                        <span className="wb-scm-commit-author">{commit.author || "—"}</span>
+                        <span className="wb-scm-commit-when">{commitWhen(commit)}</span>
+                      </button>
                     </li>
                   ))}
                 </ul>

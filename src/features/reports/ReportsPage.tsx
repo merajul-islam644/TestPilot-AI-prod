@@ -23,15 +23,21 @@ export function ReportsPage() {
   const passRate = useMemo(() => buildPassRateTrend(runs, days), [days, runs]);
   const executions = useMemo(() => buildDailyCounts(runs, days), [days, runs]);
   const activity = useMemo(() => buildDailyActivity(runs, days), [days, runs]);
-  const projectStats = useMemo(() => buildProjectStats(runs, days).sort((a, b) => b.successRate - a.successRate), [days, runs]);
-  const topFailing = useMemo(() => buildTopFailingTests(runs, caseResults), [caseResults, runs]);
+  // Projects that never completed a run in the window are "no data", not
+  // "0%" — they would otherwise read as the worst performers.
+  const projectStats = useMemo(() => buildProjectStats(runs, days).filter((stat) => stat.runs > 0).sort((a, b) => b.successRate - a.successRate), [days, runs]);
+  const topFailing = useMemo(() => buildTopFailingTests(runs, caseResults, { days }), [caseResults, days, runs]);
 
   const rangeOptions: SegmentOption<Range>[] = [
     { id: "30", label: t("reports.range30") },
     { id: "60", label: t("reports.range60") }
   ];
   const rangeLabel = range === "30" ? t("reports.range30") : t("reports.range60");
-  const avgPassRate = passRate.length > 0 ? passRate.reduce((sum, point) => sum + point.value, 0) / passRate.length : undefined;
+  // Weighted average: total passed ÷ total executed tests across the whole
+  // window. The old mean-of-daily-rates let a 2-test day outvote a 40-test
+  // day, so the headline number didn't describe the actual tests.
+  const windowTotals = activity.reduce((acc, day) => ({ passed: acc.passed + day.passed, tested: acc.tested + day.passed + day.failed }), { passed: 0, tested: 0 });
+  const avgPassRate = windowTotals.tested > 0 ? (windowTotals.passed / windowTotals.tested) * 100 : undefined;
 
   return (
     <section>
