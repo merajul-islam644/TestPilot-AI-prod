@@ -1,5 +1,5 @@
 import { readSavedRoot, sameWorkspaceRoot } from "../features/workbench/data/useTestWorkspace";
-import { isRunnableSpecPath, pathSkipReason } from "../lib/workspace/importFiles";
+import { isRunnableSpecPath, pathSkipReason, workbenchPathFilter } from "../lib/workspace/importFiles";
 import { localFolder, type FolderNode } from "../lib/workspace/localFolder";
 import { loadWorkspaceSettings, saveWorkspaceSettings } from "../lib/demo/store";
 import { setWorkspaceInfo } from "./workspaceRegistry";
@@ -64,7 +64,9 @@ export async function bootstrapWorkspaceInfos(projectIds: string[]): Promise<voi
     try {
       const { tree, exists } = await localFolder.listTree({ root: saved.root });
       if (!exists) return;
-      const paths = flattenPaths(tree).filter((path) => pathSkipReason(path) === null);
+      // Same workbench folder scope as the Tests tab's loadFolder: the
+      // project card's suite list must not count client/-style app trees.
+      const paths = workbenchPathFilter(flattenPaths(tree).filter((path) => pathSkipReason(path) === null));
       const specPaths = paths.filter(isRunnableSpecPath);
       setWorkspaceInfo(projectId, {
         root: saved.root,

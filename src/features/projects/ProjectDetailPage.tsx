@@ -8,7 +8,7 @@ import { cancelRun, runPlaywrightTests, useActiveRunnerRun, useDemoState } from 
 import { RUNNER_MAX_FILES } from "../../lib/runner/client";
 import { localFolder } from "../../lib/workspace/localFolder";
 import type { FolderNode } from "../../lib/workspace/localFolder";
-import { CODE_FILE_EXTENSIONS, isRunnableSpecPath } from "../../lib/workspace/importFiles";
+import { collectImportedHelpers, isRunnableSpecPath } from "../../lib/workspace/importFiles";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
 import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
@@ -262,8 +262,12 @@ export function ProjectDetailPage() {
       // same shape the editor's dispatch sends. Specs-only starved the
       // helper set once: a spec's "../../support/test-base" import cannot
       // resolve when the helper never lands in the temp project, and the
-      // runner answers 422 "could not load the specs". `root` rides along
-      // so workspace .env values reach the runner from disk (never app state).
+      // runner answers 422 "could not load the specs". Helpers are now
+      // discovered by FOLLOWING the specs' relative imports (transitively),
+      // not by taking the first N code files alphabetically — a branch
+      // switch that adds directories sorting before `support/` used to
+      // starve the real helpers. `root` rides along so workspace .env
+      // values reach the runner from disk (never app state).
       const selected = specPaths.slice(0, RUNNER_MAX_FILES);
       const files: { name: string; content: string }[] = [];
       for (const path of selected) {
@@ -275,9 +279,12 @@ export function ProjectDetailPage() {
         const { tree } = await localFolder.listTree({ root });
         const walk = (nodes: FolderNode[]): string[] =>
           nodes.flatMap((node) => (node.kind === "dir" && node.children ? walk(node.children) : [node.path]));
-        const helperPaths = walk(tree)
-          .filter((path) => !isRunnableSpecPath(path) && CODE_FILE_EXTENSIONS.test(path))
-          .slice(0, helperBudget);
+        const helperPaths = await collectImportedHelpers({
+          specPaths: selected,
+          knownPaths: walk(tree),
+          budget: helperBudget,
+          read: (path) => localFolder.readUserFile({ root, path })
+        });
         for (const path of helperPaths) {
           const content = await localFolder.readUserFile({ root, path });
           if (content && content.length > 0 && content.length <= RUNNER_FILE_CAP) files.push({ name: path, content });

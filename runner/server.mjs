@@ -1,7 +1,7 @@
 import express from "express";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -1513,6 +1513,64 @@ app.post("/run", async (req, res) => {
       await writeFile(target, file.content, "utf8");
     }
     await prepareWorkspace(dir, materializable.map((file) => file.name));
+    // Fixtures & data ride separately: the app's dispatch carries TEXT
+    // content only, so a spec's image/data fixture (fixtures/images/…) never
+    // landed in the temp project and specs died at collection with
+    // "Missing e2e image fixture". Byte-copy every OTHER workspace file —
+    // specs and the chrome files excluded, so testDir/testMatch keep running
+    // exactly what was selected — preserving the relative layout the spec
+    // resolves against (this also feeds the fixtures/data-session.json
+    // storageState check in buildConfig). One unreadable file never fails
+    // the run; the caps keep a huge workspace from flooding the temp dir.
+    const ASSET_SKIP_DIRS = new Set(["node_modules", ".git", "test-results", "playwright-report", ".runs"]);
+    // Same first-level scope as the workbench file list (WORKBENCH_FOLDER_NAMES
+    // in src/lib/workspace/importFiles.ts): a stray app-source tree beside the
+    // suite sorts BEFORE fixtures/ alphabetically (client/ < fixtures/), so
+    // without this gate it eats the 400-file asset budget and starves the real
+    // fixtures — the exact "Missing e2e image fixture" failure coming back.
+    const WORKBENCH_RUN_DIRS = new Set([
+      "e2e", "playwright", "tests", "test", "specs", "spec",
+      "support", "pages", "components", "fixtures", "helpers"
+    ]);
+    const sentNames = new Set(materializable.map((file) => file.name));
+    let assetCount = 0;
+    async function copyAssets(from, rel) {
+      if (assetCount >= 400) return;
+      let entries;
+      try {
+        entries = await readdir(from, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (assetCount >= 400) return;
+        const relName = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (ASSET_SKIP_DIRS.has(entry.name)) continue;
+          if (rel === "" && !WORKBENCH_RUN_DIRS.has(entry.name.toLowerCase())) continue;
+          await copyAssets(path.join(from, entry.name), relName);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const base = entry.name.toLowerCase();
+        if (base === ".env" || base.startsWith(".env.")) continue;
+        if (base === "package.json" || /^playwright\.config\./.test(base)) continue;
+        if (/\.spec\.[tj]sx?$/.test(base) || /\.spec\.mjs$/.test(base) || /\.spec\.cjs$/.test(base)) continue;
+        if (sentNames.has(relName)) continue;
+        const source = path.join(from, entry.name);
+        try {
+          const st = await stat(source);
+          if (st.size > 25 * 1024 * 1024) continue;
+          const target = path.join(dir, ...relName.split("/"));
+          await mkdir(path.dirname(target), { recursive: true });
+          await copyFile(source, target);
+          assetCount += 1;
+        } catch {
+          /* one unreadable file never fails the run */
+        }
+      }
+    }
+    if (typeof body.root === "string" && body.root.length > 0) await copyAssets(body.root, "");
     // The temp project sits under the runner root and would inherit its
     // "type": "module" — under Node ESM resolution a spec's extensionless
     // helper import ("../../support/test-base") fails outright. Pin CJS so

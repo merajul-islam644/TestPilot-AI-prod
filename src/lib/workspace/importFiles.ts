@@ -96,8 +96,100 @@ export function isRunnableSpecPath(path: string): boolean {
   return !/[\s\\]/.test(path) && /^[\w.-]+(\/[\w.-]+)*\.(spec|test)\.(mjs|js|ts)$/.test(path);
 }
 
+/** First-level workspace folders the Playwright workbench shows. The editor
+ *  is a TEST workbench: app-source trees that happen to sit beside the suite
+ *  (client/, server/, .github, npm-cache, …) never belong in it — the user
+ *  asked for exactly this scoping ("no folder opens other than e2e- and
+ *  playwright-style folders"). Root-level loose files (playwright.config.ts,
+ *  package.json, …) always stay; deeper levels are untouched, so tests/,
+ *  support/, fixtures/ all show. The runner's run-dir asset copy mirrors
+ *  this list (WORKBENCH_RUN_DIRS in runner/server.mjs). */
+export const WORKBENCH_FOLDER_NAMES = new Set([
+  "e2e", "playwright", "tests", "test", "specs", "spec",
+  "support", "pages", "components", "fixtures", "helpers"
+]);
+
+/** Keep only paths inside the workbench folder scope (or at the root level). */
+export function workbenchPathFilter(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const slash = path.indexOf("/");
+    if (slash === -1) return true;
+    return WORKBENCH_FOLDER_NAMES.has(path.slice(0, slash).toLowerCase());
+  });
+}
+
 /** Code files ride along with a run: specs may import them via relative paths. */
 export const CODE_FILE_EXTENSIONS = /\.(mjs|cjs|js|jsx|ts|tsx|mts|cts|json)$/;
+
+/** Resolution suffixes for an extensionless relative import, Node order. */
+const IMPORT_SUFFIXES = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json", "/index.ts", "/index.tsx", "/index.js", "/index.jsx", "/index.mjs", "/index.cjs", "/index.json"];
+
+/** Static import / require specifiers in a source file (dynamic import() included). */
+export function importSpecifiersOf(content: string): string[] {
+  const out: string[] = [];
+  const pattern = /(?:\bfrom\s+|\brequire\s*\(\s*|\bimport\s+|\bimport\s*\(\s*)["']([^"']+)["']/g;
+  for (const match of content.matchAll(pattern)) {
+    const specifier = match[1];
+    if (specifier) out.push(specifier);
+  }
+  return out;
+}
+
+/** "tests/auth/../support" -> "support"; dot segments collapse, empties drop. */
+function resolveRelative(fromDir: string, specifier: string): string {
+  const segments = `${fromDir}/${specifier}`.split("/");
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  return out.join("/");
+}
+
+/**
+ * Follow the selected specs' relative imports transitively and return the
+ * helper files they actually need, bounded by the run's file budget. This
+ * replaces the old "first N code files alphabetically" fill — a branch
+ * switch that adds directories sorting before `support/` starved the real
+ * helpers and the run died with "Cannot find module '../../support/test-base'".
+ * Unresolvable names (bare packages) are skipped; a missing/unreadable file
+ * simply ends that branch of the walk.
+ */
+export async function collectImportedHelpers({ specPaths, knownPaths, budget, read }: {
+  specPaths: string[];
+  /** Every file path the workspace currently has — the existence check. */
+  knownPaths: string[];
+  budget: number;
+  read: (path: string) => Promise<string | null>;
+}): Promise<string[]> {
+  const exists = new Set(knownPaths);
+  const cache = new Map<string, string | null>();
+  const seen = new Set(specPaths);
+  const helpers: string[] = [];
+  const queue = [...specPaths];
+  while (queue.length > 0 && helpers.length < budget) {
+    const path = queue.shift() as string;
+    let content = cache.get(path);
+    if (content === undefined) {
+      content = await read(path);
+      cache.set(path, content);
+    }
+    if (content === null) continue;
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    for (const specifier of importSpecifiersOf(content)) {
+      if (!specifier.startsWith(".")) continue;
+      const base = resolveRelative(dir, specifier);
+      const hit = IMPORT_SUFFIXES.map((suffix) => `${base}${suffix}`).find((candidate) => exists.has(candidate));
+      if (!hit || seen.has(hit)) continue;
+      seen.add(hit);
+      if (isRunnableSpecPath(hit)) continue;
+      if (helpers.length < budget) helpers.push(hit);
+      queue.push(hit);
+    }
+  }
+  return helpers;
+}
 
 /** Common first segment across every file = the imported folder's own name. */
 export function workspaceRootOf(paths: string[]): string {

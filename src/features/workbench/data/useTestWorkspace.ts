@@ -57,8 +57,10 @@ import type { FsDirHandle } from "../../../lib/workspace/fsaWorkspace";
 import {
   CODE_FILE_EXTENSIONS,
   IMPORT_MAX_FILE_BYTES,
+  collectImportedHelpers,
   isRunnableSpecPath,
-  pathSkipReason
+  pathSkipReason,
+  workbenchPathFilter
 } from "../../../lib/workspace/importFiles";
 import type { Project } from "../../../lib/demo/data";
 import { setWorkspaceInfo } from "../../../shared/workspaceRegistry";
@@ -616,11 +618,23 @@ export function useTestWorkspace(project: Project) {
   }, [root, contents, io]);
 
   /** Content search over the transport seam (runner: server-side scan;
-   *  FSA: the same guarded scan against the handle tree). */
+   *  FSA: the same guarded scan against the handle tree). The scan runs
+   *  over the whole guarded root, so results are narrowed here to the
+   *  workbench folder scope — and a query that names a FILE lists the
+   *  file itself (VS Code-style), even when no line of code contains it. */
   const searchWorkspace = useCallback(async (query: string): Promise<SearchResponse> => {
     if (!root || query.trim().length < 2) return { results: [], truncated: false };
-    return io.search({ root, query });
-  }, [root, io]);
+    const response = await io.search({ root, query });
+    const lower = query.trim().toLowerCase();
+    const scope = new Set(paths);
+    const content = response.results.filter((group) => scope.has(group.path));
+    const hit = new Set(content.map((group) => group.path));
+    const byName = paths
+      .filter((path) => !hit.has(path) && path.toLowerCase().includes(lower))
+      .slice(0, 12)
+      .map((path) => ({ path, lines: [{ number: 1, text: path }] }));
+    return { results: [...byName, ...content], truncated: response.truncated };
+  }, [root, io, paths]);
 
   // ── Open folder ─────────────────────────────────────────────────
   // The Lattice flow, lazy edition: walk the real folder's TREE only
@@ -659,7 +673,12 @@ export function useTestWorkspace(project: Project) {
         }
       };
       walk(tree);
-      const candidates = found.filter((path) => pathSkipReason(path) === null);
+      // Workbench folder scope: only the suite's own folders (tests/,
+      // support/, fixtures/, e2e/, playwright/, …) reach the file list —
+      // an app-source tree sitting beside them (client/, .github, …)
+      // never enters the tree, search, palette or the spec count.
+      // Root-level loose files (playwright.config.ts, …) always stay.
+      const candidates = workbenchPathFilter(found.filter((path) => pathSkipReason(path) === null));
 
       setRoot(rootPath);
       // The workspace's transport is whoever loaded the tree — set both
@@ -702,7 +721,7 @@ export function useTestWorkspace(project: Project) {
         const skipped = found.length - candidates.length;
         toast.success(`Opened ${name}`, {
           description: candidates.length > 0
-            ? `${candidates.length} file${candidates.length === 1 ? "" : "s"} on disk${skipped > 0 ? ` · ${skipped} skipped (binary/secret)` : ""}`
+            ? `${candidates.length} file${candidates.length === 1 ? "" : "s"} on disk${skipped > 0 ? ` · ${skipped} skipped (binary/secret/non-test)` : ""}`
             : "Empty folder — create a spec with the + button"
         });
       }
@@ -1449,12 +1468,17 @@ export function useTestWorkspace(project: Project) {
       const selected = runnable.slice(0, RUNNER_MAX_FILES);
       // Specs share the file budget with the code files they import: the
       // runner needs the helpers on disk to resolve relative imports.
-      // Helpers may never have been opened — load the run set first
-      // (bounded: at most RUNNER_MAX_FILES files total).
+      // Helpers are found by following the specs' imports transitively —
+      // not "first N code files alphabetically", which a branch switch
+      // could starve (support/ sorting after new directories → "Cannot
+      // find module '../../support/test-base'").
       const helperBudget = Math.max(0, RUNNER_MAX_FILES - selected.length);
-      const helperPaths = paths
-        .filter((path) => !isRunnableSpecPath(path) && CODE_FILE_EXTENSIONS.test(path))
-        .slice(0, helperBudget);
+      const helperPaths = (await collectImportedHelpers({
+        specPaths: selected,
+        knownPaths: paths,
+        budget: helperBudget,
+        read: (path) => (root ? io.readUserFile({ root, path }) : Promise.resolve(contentOf(path) || null))
+      })).filter((path) => CODE_FILE_EXTENSIONS.test(path));
       const fetched = await ensureLoaded([...selected, ...helperPaths]);
       const contentNow = (path: string): string => fetched[path] ?? contentOf(path);
 
