@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { PanelLeft } from "lucide-react";
 import { ActivityBar } from "./components/ActivityBar";
+import { BranchPicker } from "./components/BranchPicker";
 import { ExplorerView } from "./components/ExplorerView";
 import { SearchView } from "./components/SearchView";
 import { SourceControlView } from "./components/SourceControlView";
@@ -24,6 +25,7 @@ import { BottomPanel } from "./components/BottomPanel";
 import { CommandPalette, type WorkbenchCommand } from "./components/CommandPalette";
 import { StatusBar } from "./components/StatusBar";
 import { useTestWorkspace } from "./data/useTestWorkspace";
+import { useGitBranches } from "./data/useGitBranches";
 import { workbenchStore, useWorkbench } from "./state/workbenchStore";
 import type { SidebarView } from "./state/workbenchStore";
 import { basenameOf, buildTree, languageOf } from "./model/treeModel";
@@ -64,6 +66,10 @@ export function Workbench({ project }: { project: Project }) {
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   /** Bumped to pop the explorer's inline new-file input from the palette. */
   const [newFileSignal, setNewFileSignal] = useState(0);
+
+  // One branch-list fetch shared by the SCM section and the sidebar's
+  // pinned bottom branch bar (re-reads on switches and git mutations).
+  const gitBranches = useGitBranches(ws.root, ws.gitBranch, ws.gitTick);
 
   const paths = ws.paths;
   const tree = useMemo(() => buildTree(paths), [paths]);
@@ -267,8 +273,11 @@ export function Workbench({ project }: { project: Project }) {
               <SourceControlView
                 busy={ws.saving || ws.opening || ws.gitBusy}
                 dirtyPaths={ws.gitDirtyPaths}
+                branches={gitBranches.branches}
+                branchesNote={gitBranches.note}
                 gitBranch={ws.gitBranch}
                 gitTick={ws.gitTick}
+                onReloadBranches={gitBranches.reload}
                 root={ws.root}
                 onCheckout={(name) => ws.checkoutBranch(name)}
                 onCommit={(paths, message) => ws.commitWorkspace(paths, message)}
@@ -295,6 +304,20 @@ export function Workbench({ project }: { project: Project }) {
                 runnerUrl={ws.runnerUrl}
                 running={ws.running}
               />
+            ) : null}
+            {/* Always-on branch bar: the switcher stays in Source Control;
+                this pinned copy keeps the active branch visible — and
+                switchable — from every sidebar view, VS Code status-bar
+                style. Hidden when the folder is not a git clone. */}
+            {ws.root && ws.gitBranch ? (
+              <div className="wb-sidebar-branch">
+                <BranchPicker
+                  branches={gitBranches.branches}
+                  disabled={ws.saving || ws.opening || ws.gitBusy}
+                  onChange={(name) => void ws.checkoutBranch(name)}
+                  value={ws.gitBranch}
+                />
+              </div>
             ) : null}
             <SidebarSash />
           </aside>

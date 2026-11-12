@@ -8,7 +8,7 @@
 // SCM body's overflow-y clip, like a real menu.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, GitBranch } from "lucide-react";
 
 type Anchor = { left: number; width: number; top?: number; bottom?: number };
 
@@ -131,7 +131,10 @@ export function BranchPicker({ branches, disabled, value, onChange }: {
         title="Switch branch"
         type="button"
       >
-        <span className="wb-branch-value">{value}</span>
+        <span className="wb-branch-value">
+          <GitBranch className="wb-branch-icon" size={12} />
+          {value}
+        </span>
         <ChevronDown className="wb-branch-chevron" size={12} />
       </button>
       {open && anchor ? (

@@ -42,7 +42,7 @@ import { fileIconElement } from "../icons/fileIcon";
 /** One row of the local branch's history (`git log`). */
 type LocalCommit = { sha: string; subject: string; author: string; date: string };
 
-export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, onOpenDiff, onRevert, onSaveAll, onPull, onPush, onCommit, onCheckout, onCreateBranch, onToggleSidebar }: {
+export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, branches, branchesNote, onReloadBranches, onOpenDiff, onRevert, onSaveAll, onPull, onPush, onCommit, onCheckout, onCreateBranch, onToggleSidebar }: {
   dirtyPaths: Set<string>;
   /** Saving, opening a folder or a git op in flight -- disables the actions. */
   busy: boolean;
@@ -53,6 +53,14 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   /** Bumped after each successful git mutation — re-reads branches and
    *  history even when the branch itself didn't change (commit/pull/push). */
   gitTick: number;
+  /** All branches of the clone — locals first, then origin/*. Owned by
+   *  the shared useGitBranches hook so this section and the sidebar's
+   *  bottom branch bar render the same list from one fetch. */
+  branches: string[];
+  /** Non-empty when the branch list failed to load. */
+  branchesNote: string;
+  /** Re-run the branch-list fetch (the header's reload button). */
+  onReloadBranches: () => void;
   /** VS Code SCM behaviour: clicking a change opens it as a diff
    *  editor (baseline ↔ current edits), not a plain editor. */
   onOpenDiff: (path: string) => void;
@@ -73,8 +81,6 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   /** The index, VS Code style: rows here are the next commit. */
   const [staged, setStaged] = useState<Set<string>>(() => new Set());
 
-  const [branches, setBranches] = useState<string[]>([]);
-  const [branchesNote, setBranchesNote] = useState("");
   const [creating, setCreating] = useState(false);
   const [newBranch, setNewBranch] = useState("");
   const [creatingBranch, setCreatingBranch] = useState(false);
@@ -123,33 +129,6 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   useEffect(() => {
     void refreshLocalGit(root);
   }, [root, refreshLocalGit]);
-
-  /** Local branches of the open clone, for the switcher. */
-  const refreshBranches = useCallback(async (currentRoot: string | null) => {
-    if (!currentRoot) {
-      setBranches([]);
-      return;
-    }
-    try {
-      const res = await localFolder.runGit({ root: currentRoot, op: "branch-list" });
-      if (res.code !== 0) {
-        setBranches([]);
-        setBranchesNote(((res.stderr || res.stdout).trim() || "git branch failed").slice(0, 160));
-        return;
-      }
-      // git prints local branches first, then origin/* — the picker keeps
-      // that order. "origin" and "origin/HEAD" are pseudo-refs, not branches.
-      setBranches(res.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
-        .filter((line) => line !== "origin" && !line.startsWith("origin/HEAD")));
-      setBranchesNote("");
-    } catch (error) {
-      setBranches([]);
-      setBranchesNote(error instanceof Error ? error.message : String(error));
-    }
-  }, []);
-  useEffect(() => {
-    void refreshBranches(root);
-  }, [root, gitBranch, gitTick, refreshBranches]);
 
   /** Recent commits of the HEAD branch, straight from `git log`. */
   const refreshHistory = useCallback(async (currentRoot: string | null) => {
@@ -260,7 +239,7 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
   }, [dirtyPaths]);
 
   function refreshAll() {
-    void refreshBranches(root);
+    onReloadBranches();
     void refreshHistory(root);
     void refreshLocalGit(root);
   }
@@ -387,7 +366,7 @@ export function SourceControlView({ dirtyPaths, busy, root, gitBranch, gitTick, 
                 <button aria-label="New branch" className="wb-icon-btn" disabled={busy || creating} onClick={() => setCreating(true)} title="Create a branch and switch to it" type="button">
                   <Plus size={13} />
                 </button>
-                <button aria-label="Reload branch list" className="wb-icon-btn" disabled={busy} onClick={() => void refreshBranches(root)} title="Reload branch list" type="button">
+                <button aria-label="Reload branch list" className="wb-icon-btn" disabled={busy} onClick={onReloadBranches} title="Reload branch list" type="button">
                   <RefreshCw size={13} />
                 </button>
               </span>

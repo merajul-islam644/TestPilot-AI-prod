@@ -1355,8 +1355,26 @@ body.wb-resizing .wb-sash-arrow { opacity: 0; pointer-events: none; }
 /* Own specificity beats ".wb-scm-branch-row .wb-scm-input" (width:auto),
    which would otherwise shrink the trigger to its label. */
 .wb-branch-picker .wb-branch-trigger { align-items: center; cursor: pointer; display: flex; gap: 6px; justify-content: space-between; width: 100%; }
+
+/* ---------- sidebar branch bar ---------- */
+/* The SCM section keeps its switcher; this pinned bar at the sidebar's
+   foot mirrors it so the active branch is visible — and switchable —
+   from every view (explorer, search, run), like VS Code's status bar. */
+.wb-sidebar-branch {
+  align-items: center;
+  border-top: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  display: flex;
+  flex: none;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.wb-sidebar-branch .wb-branch-picker { color: hsl(var(--foreground)); }
+/* The branch glyph rides INSIDE the trigger, left of the name — both the
+   SCM row and the pinned sidebar bar get it from the same component. */
+.wb-branch-trigger .wb-branch-icon { color: hsl(var(--muted-foreground)); flex: none; }
 .wb-branch-trigger:disabled { cursor: not-allowed; opacity: 0.5; }
-.wb-branch-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-branch-value { align-items: center; display: inline-flex; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-branch-pop {
   background: hsl(var(--popover));
   border: 1px solid hsl(var(--border));
