@@ -129,7 +129,9 @@ export function SettingsPage() {
             </div>
           </div>
           <nav aria-label={t("settings.title")} className="settings-rail-nav">
-            {SECTIONS.map((id) => {
+            {/* The workspace section manages members — admin territory, so
+                the data-viewer role's rail skips it. */}
+            {(viewer ? SECTIONS.filter((id) => id !== "workspace") : SECTIONS).map((id) => {
               const meta = SECTION_META[id];
               const Icon = meta.icon;
               return (
@@ -161,11 +163,16 @@ export function SettingsPage() {
 
           {section === "general" ? (
             <div className="settings-card">
-              <SettingRow
-                control={<input onChange={(event) => setNameDraft(event.target.value)} value={nameDraft} />}
-                hint={t("settings.general.nameHint")}
-                title={t("settings.general.name")}
-              />
+              {/* Workspace name + default environment are GLOBAL settings —
+                  the data-viewer role gets the per-user language choice only,
+                  and with nothing to save, no Save button either. */}
+              {!viewer ? (
+                <SettingRow
+                  control={<input onChange={(event) => setNameDraft(event.target.value)} value={nameDraft} />}
+                  hint={t("settings.general.nameHint")}
+                  title={t("settings.general.name")}
+                />
+              ) : null}
               <SettingRow
                 control={(
                   <Select
@@ -177,25 +184,29 @@ export function SettingsPage() {
                 hint={t("settings.general.languageHint")}
                 title={t("settings.general.language")}
               />
-              <SettingRow
-                control={(
-                  <Select
-                    items={ENV_OPTIONS.map((option) => ({ value: option.id, label: t(option.labelKey) }))}
-                    onChange={(value) => setEnvDraft(value as DefaultEnvironment)}
-                    value={envDraft}
-                  />
-                )}
-                hint={t("settings.general.envHint")}
-                title={t("settings.general.env")}
-              />
-              <div className="settings-card-footer">
-                {savedFlash ? <span className="alert alert-success">{t("settings.general.saved")}</span> : null}
-                <button className="primary-button" onClick={handleSave}>{t("common.save")}</button>
-              </div>
+              {!viewer ? (
+                <SettingRow
+                  control={(
+                    <Select
+                      items={ENV_OPTIONS.map((option) => ({ value: option.id, label: t(option.labelKey) }))}
+                      onChange={(value) => setEnvDraft(value as DefaultEnvironment)}
+                      value={envDraft}
+                    />
+                  )}
+                  hint={t("settings.general.envHint")}
+                  title={t("settings.general.env")}
+                />
+              ) : null}
+              {!viewer ? (
+                <div className="settings-card-footer">
+                  {savedFlash ? <span className="alert alert-success">{t("settings.general.saved")}</span> : null}
+                  <button className="primary-button" onClick={handleSave}>{t("common.save")}</button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
-          {section === "workspace" ? (
+          {section === "workspace" && !viewer ? (
             <div className="settings-card">
               <SettingRow
                 control={<span className="chip">{workspaceName || APP_NAME}</span>}

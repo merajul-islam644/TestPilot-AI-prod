@@ -159,9 +159,14 @@ export function OverviewPage() {
             </div>
             <button className="link-button" onClick={() => navigate("/projects")}>{t("common.viewAll")}</button>
           </div>
-          <div className="health-list">
+          <div
+            className="health-list"
+            /* Empty state centered: this column stretches to the chart's
+               height, so a bare top-left paragraph read as a rendering bug. */
+            style={projectStats.length === 0 ? { display: "grid", flex: 1, minHeight: 160, placeItems: "center" } : undefined}
+          >
             {projectStats.length === 0 ? (
-              <p className="muted">{t("suite.noRuns")}</p>
+              <p className="muted" style={{ margin: 0, textAlign: "center" }}>{t("suite.noRuns")}</p>
             ) : (
               projectStats.slice(0, 5).map((stat) => {
               const project = projectById(stat.projectId);
