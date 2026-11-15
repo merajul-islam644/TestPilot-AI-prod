@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, LogIn } from "lucide-react";
 import { useState } from "react";
+import { APP_NAME } from "../../app/appName";
 import { useAuth } from "../../app/providers/AuthProvider";
 import { fetchLoginOptions } from "../../lib/blocks/auth";
 import { isLoginConfigured } from "../../lib/blocks/config";
@@ -49,7 +50,7 @@ export function LoginPage({ onNavigate, returnTo }: { onNavigate: (path: string)
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-brand"><span className="brand-mark"><Activity size={18} /></span><span>{t("app.name")}</span></div>
+        <div className="auth-brand"><span className="brand-mark"><Activity size={18} /></span><span>{APP_NAME}</span></div>
         <h2>{t("auth.welcome")}</h2>
         <p>{t("auth.subtitle")}</p>
         {!configured ? (

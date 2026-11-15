@@ -3,10 +3,16 @@ import { useEffect, useState } from "react";
 // The workspace name is a local preference: Settings writes it, the sidebar
 // brand and the sign-in card read it. A custom event bridges same-tab
 // updates (the browser only fires `storage` events across tabs).
-const WORKSPACE_KEY = "testpilot:workspaceName";
-const WORKSPACE_EVENT = "testpilot:workspace-changed";
-const DEFAULT_ENV_KEY = "testpilot:defaultEnv";
-const DEFAULT_ENV_EVENT = "testpilot:defaultenv-changed";
+//
+// The keys are namespaced with THIS app's own prefix on purpose: the older
+// generic "testpilot:" keys collided with the user's other locally-hosted
+// apps built from the same template sharing the origin's localStorage — one
+// app's saved workspace name ("Mess Manager") surfaced as this app's
+// sidebar brand. Anything a user sets here now stays this app's alone.
+const WORKSPACE_KEY = "tpai:workspaceName";
+const WORKSPACE_EVENT = "tpai:workspace-changed";
+const DEFAULT_ENV_KEY = "tpai:defaultEnv";
+const DEFAULT_ENV_EVENT = "tpai:defaultenv-changed";
 
 export function getWorkspaceName(): string {
   return localStorage.getItem(WORKSPACE_KEY) ?? "";

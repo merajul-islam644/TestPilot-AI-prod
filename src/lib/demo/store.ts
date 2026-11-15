@@ -930,7 +930,9 @@ export function resetDemoData() {
   timers.clear();
   deletedProjectIds.clear();
   for (const key of [...localStorage.keys()]) {
-    if (key.startsWith("testpilot:")) localStorage.removeItem(key);
+    // Both namespaces: the current app-scoped "tpai:" keys and the legacy
+    // generic "testpilot:" ones an older build may have written.
+    if (key.startsWith("tpai:") || key.startsWith("testpilot:")) localStorage.removeItem(key);
   }
   emit({ status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null });
   toast.info(translate("toast.resetStarted"));

@@ -27,6 +27,7 @@ import { MfaSection } from "../mfa/MfaSection";
 import { useAvatar } from "../profile/useAvatar";
 import { useCurrentUser, userDisplayName, userInitials } from "../profile/useCurrentUser";
 import { useIsDataViewer } from "../access/useDataViewer";
+import { APP_NAME } from "../../app/appName";
 
 type Section = "general" | "workspace" | "profile" | "security" | "notifications" | "appearance";
 
@@ -90,7 +91,7 @@ export function SettingsPage() {
   const viewer = useIsDataViewer();
 
   const [section, setSection] = useState<Section>("general");
-  const [nameDraft, setNameDraft] = useState(workspaceName || "TestPilot AI");
+  const [nameDraft, setNameDraft] = useState(workspaceName || APP_NAME);
   const [envDraft, setEnvDraft] = useState<DefaultEnvironment>(() => getDefaultEnvironment());
   const [savedFlash, setSavedFlash] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -106,7 +107,7 @@ export function SettingsPage() {
   }, [savedFlash]);
 
   function handleSave() {
-    setWorkspaceName(nameDraft.trim() || "TestPilot AI");
+    setWorkspaceName(nameDraft.trim() || APP_NAME);
     setDefaultEnvironment(envDraft);
     setSavedFlash(true);
   }
@@ -197,7 +198,7 @@ export function SettingsPage() {
           {section === "workspace" ? (
             <div className="settings-card">
               <SettingRow
-                control={<span className="chip">{workspaceName || "TestPilot AI"}</span>}
+                control={<span className="chip">{workspaceName || APP_NAME}</span>}
                 hint={t("settings.general.nameHint")}
                 title={t("settings.general.name")}
               />

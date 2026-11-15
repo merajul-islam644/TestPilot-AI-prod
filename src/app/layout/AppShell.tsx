@@ -19,6 +19,7 @@ import { PageSkeleton } from "../../shared/ui/PageSkeleton";
 import { RouteErrorBoundary } from "../../shared/ui/ErrorFallback";
 import { useWorkspaceName } from "../../shared/useWorkspaceName";
 import { useIsDataViewer } from "../../features/access/useDataViewer";
+import { APP_NAME } from "../appName";
 
 const COLLAPSED_KEY = "blocks-app:sidebar-collapsed";
 const MOBILE_QUERY = "(max-width: 880px)";
@@ -129,7 +130,11 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
             ) : (
               <a className="brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/"); }}>
                 <span className="brand-mark"><FlaskConical size={16} /></span>
-                <span>{workspaceName || t("app.name")}</span>
+                {/* APP_NAME, not t("app.name"): the brand is this repo's
+                    identity — the tenant-wide localization store carries
+                    another of the user's apps' name under that key, and
+                    cloud-merge rebranded this app seconds after load. */}
+                <span>{workspaceName || APP_NAME}</span>
               </a>
             )}
             {/* Only shown while expanded -- once minimized the toggle lives in
@@ -140,7 +145,7 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
               </button>
             )}
           </div>
-          <nav aria-label={t("app.name")}>
+          <nav aria-label={APP_NAME}>
             {primaryNavItems.map(renderItem)}
             {visibleSecondary.length > 0 ? (
               <>

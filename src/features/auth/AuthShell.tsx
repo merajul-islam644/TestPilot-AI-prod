@@ -1,6 +1,7 @@
 import { Activity } from "lucide-react";
 import type { ReactNode } from "react";
 import { useT } from "../../lib/i18n/LocalizationProvider";
+import { APP_NAME } from "../../app/appName";
 
 /** The standalone account-page shell — same brand row, card and screen as
  *  the login page, shared by every public self-service flow (signup,
@@ -10,7 +11,7 @@ export function AuthShell({ children, subtitle, title }: { children: ReactNode; 
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <div className="auth-brand"><span className="brand-mark"><Activity size={18} /></span><span>{t("app.name")}</span></div>
+        <div className="auth-brand"><span className="brand-mark"><Activity size={18} /></span><span>{APP_NAME}</span></div>
         <h2>{title}</h2>
         <p>{subtitle}</p>
         {children}
