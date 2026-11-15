@@ -52,7 +52,7 @@ import { CircleCheck, CircleSlash, CircleX, Clock, GitBranch, Loader2, Play, Ref
 import { toast } from "sonner";
 import "../workbench/workbench.css"; // the BranchPicker's .wb-branch-* styles live there
 import { BranchPicker } from "../workbench/components/BranchPicker";
-import { DEFAULT_BASE_URL, readSavedRoot, readSavedSettings } from "../workbench/data/useTestWorkspace";
+import { DEFAULT_BASE_URL, readSavedRoot, readSavedSettings, writeSavedRoot } from "../workbench/data/useTestWorkspace";
 import { cancelRun, loadWorkspaceSettings, runPlaywrightTests, useActiveRunnerRun, useDemoState } from "../../lib/demo/store";
 import { projects } from "../../lib/demo/data";
 import { runTrigger } from "../../lib/demo/data";
@@ -559,6 +559,9 @@ export function GlobalBranchSwitcher() {
     const byRoot = new Map<string, { id: string; name: string }[]>();
     const unboundList: { id: string; name: string }[] = [];
     const localRoots = new Set<string>();
+    // Runner bindings seen for projects this browser hasn't saved yet —
+    // adoption candidates (see the probe loop below).
+    const runnerBindings = new Map<string, string>();
     await Promise.all(projects.map(async (project) => {
       const saved = readSavedRoot(project.id);
       let root: string | null = null;
@@ -571,7 +574,10 @@ export function GlobalBranchSwitcher() {
       } else {
         try {
           const binding = await loadWorkspaceSettings(project.id);
-          if (binding?.root && binding.mode === "runner") root = binding.root;
+          if (binding?.root && binding.mode === "runner") {
+            root = binding.root;
+            runnerBindings.set(binding.root, binding.root);
+          }
         } catch {
           // No gateway row — the project simply has no folder here.
         }
@@ -606,6 +612,26 @@ export function GlobalBranchSwitcher() {
       }
       return group;
     }));
+    // Auto-adopt runner bindings whose root exists on THIS machine: a
+    // browser on a fresh origin (prod vs dev) has an empty localStorage,
+    // but the runner serves the same disk — if the bound root lists here,
+    // this browser can run it exactly like a saved one. Bindings from
+    // other machines fail the list probe and stay display-only.
+    for (const group of nextGroups) {
+      if (group.local || !runnerBindings.has(group.root)) continue;
+      try {
+        const probeList = await localFolder.listTree({ root: group.root });
+        if (!probeList.exists) continue;
+        for (const project of group.projects) {
+          writeSavedRoot(project.id, { root: group.root, mode: "runner" });
+        }
+        group.local = true;
+        localRoots.add(group.root);
+      } catch {
+        // Another machine's folder (or the runner is down) — stays
+        // display-only; the next probe retries.
+      }
+    }
     // Only the newest probe wins — an older in-flight probe finishing
     // after a newer one would resurrect stale branches.
     if (probeTick !== probeTickRef.current) return;

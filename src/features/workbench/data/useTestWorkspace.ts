@@ -115,7 +115,7 @@ function readSavedRoot(projectId: string): SavedRoot | null {
     return null;
   }
 }
-export { readSavedRoot, readSavedSettings };
+export { readSavedRoot, readSavedSettings, writeSavedRoot };
 
 function writeSavedRoot(projectId: string, saved: SavedRoot | null): void {
   try {
