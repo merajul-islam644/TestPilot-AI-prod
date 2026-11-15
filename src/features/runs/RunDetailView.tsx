@@ -150,7 +150,7 @@ export function RunDetailView({ crumbs, hideHeader = false, runId, onBack, onOpe
     () => (isRunnerRun ? workspace?.specPaths ?? [] : []),
     [isRunnerRun, workspace]
   );
-  const blocks = useSpecBlocks(isRunnerRun ? runnerRoot : null, specPaths);
+  const blocks = useSpecBlocks(isRunnerRun ? runnerRoot : null, specPaths, run?.projectId);
 
   if (!run) {
     return (

@@ -51,6 +51,27 @@ function TableRows({ count }: { count: number }) {
 function OverviewSkeleton() {
   return (
     <div className="page-skeleton">
+      {/* The page's first block: the Branch & runs control strip + card row. */}
+      <div className="panel skel-card">
+        <div className="skel-row skel-row-between">
+          <Line tall width="18%" />
+          <div className="skel-row">
+            <span className="skeleton skel-btn" />
+            <span className="skeleton skel-btn" />
+          </div>
+        </div>
+        <div className="skel-row">
+          <div className="panel skel-card" style={{ flex: 1, margin: 0 }}>
+            <Line width="30%" />
+            <Line width="52%" />
+            <Line width="44%" />
+          </div>
+          <div className="panel skel-card" style={{ flex: 1, margin: 0 }}>
+            <Line width="26%" />
+            <Line width="48%" />
+          </div>
+        </div>
+      </div>
       <div className="kpis">
         {[0, 1, 2, 3].map((i) => (
           <Card key={i}>
@@ -126,7 +147,9 @@ function ListSkeleton() {
   );
 }
 
-/** Detail pages: title row, chip strip, then the main panel. */
+/** Detail pages: title row, chip strip, then the main panel. The extra
+ *  small-bar row doubles as the project page's tab strip — its most-used
+ *  deep link lands there. */
 function DetailSkeleton() {
   return (
     <div className="page-skeleton">
@@ -136,6 +159,11 @@ function DetailSkeleton() {
           <span className="skeleton skel-btn" />
           <span className="skeleton skel-chip" />
         </div>
+      </div>
+      <div className="skel-row">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <span className="skeleton skel-chip" key={i} style={{ width: `${17 - (i % 3) * 2}%` }} />
+        ))}
       </div>
       <div className="skel-row">
         <span className="skeleton skel-chip" />
@@ -151,11 +179,13 @@ function DetailSkeleton() {
   );
 }
 
+/** Reports: four chart cards in the 2-col grid + the full-width failures
+ *  panel beneath. */
 function ReportsSkeleton() {
   return (
     <div className="page-skeleton">
       <div className="grid-2">
-        {[0, 1].map((i) => (
+        {[0, 1, 2, 3].map((i) => (
           <Card key={i}>
             <HeadRow />
             <span className="skeleton skel-chart" />
@@ -166,6 +196,45 @@ function ReportsSkeleton() {
         <HeadRow />
         <TableRows count={5} />
       </Card>
+    </div>
+  );
+}
+
+/** Settings: the identity + section rail on the left, the active card on
+ *  the right — the page's whole geometry, before any section renders. */
+function SettingsSkeleton() {
+  return (
+    <div className="page-skeleton">
+      <div className="skel-row" style={{ alignItems: "stretch" }}>
+        <div className="panel skel-card" style={{ flex: "0 0 260px", margin: 0 }}>
+          <div className="skel-row">
+            <span className="skeleton skeleton-avatar-hero" style={{ height: 36, width: 36 }} />
+            <div style={{ display: "grid", gap: 6 }}>
+              <Line tall width="120px" />
+              <Line width="150px" />
+            </div>
+          </div>
+          {[64, 52, 58, 46, 60, 50].map((width, i) => (
+            <div className="skel-row" key={i} style={{ marginTop: i === 0 ? 14 : 8 }}>
+              <span className="skeleton skel-icon" />
+              <Line width={`${width}%`} />
+            </div>
+          ))}
+        </div>
+        <div className="panel skel-card" style={{ flex: 1, margin: 0 }}>
+          <HeadRow />
+          {[0, 1, 2].map((i) => (
+            <div className="skel-row skel-row-between" key={i} style={{ marginTop: 10 }}>
+              <Line width="34%" />
+              <Line width={`${52 - i * 10}%`} />
+            </div>
+          ))}
+          <div className="skel-row skel-row-between" style={{ marginTop: 14 }}>
+            <span className="skeleton skel-chip" />
+            <span className="skeleton skel-btn" />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -242,9 +311,14 @@ export function PageSkeleton({ ariaLabel, path }: { ariaLabel?: string; path: st
   let body: ReactNode;
   if (base === undefined) body = <OverviewSkeleton />;
   else if (base === "projects") body = isDetail ? <DetailSkeleton /> : <ProjectsSkeleton />;
-  else if (base === "runs" || base === "suites" || base === "issues") body = isDetail ? <DetailSkeleton /> : <ListSkeleton />;
+  else if (base === "runs" || base === "suites") body = isDetail ? <DetailSkeleton /> : <ListSkeleton />;
+  // Issues: /issues/project/:id is a LIST page wearing a three-segment path.
+  else if (base === "issues") body = isDetail && segments[1] !== "project" ? <DetailSkeleton /> : <ListSkeleton />;
   else if (base === "reports") body = <ReportsSkeleton />;
   else if (base === "profile") body = <ProfileSkeleton />;
+  // The admin screens are toolbar + table pages — same shape as the lists.
+  else if (base === "users" || base === "roles" || base === "organizations") body = <ListSkeleton />;
+  else if (base === "settings") body = <SettingsSkeleton />;
   else body = <GenericSkeleton />;
 
   return (

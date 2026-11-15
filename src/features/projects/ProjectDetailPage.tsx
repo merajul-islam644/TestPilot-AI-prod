@@ -127,7 +127,7 @@ export function ProjectDetailPage() {
       ? null
       : binding?.mode === "runner" && binding.root ? binding.root : null;
   const specPaths = useMemo(() => workspaceInfo?.specPaths ?? [], [workspaceInfo]);
-  const blocks = useSpecBlocks(runnerRoot, specPaths);
+  const blocks = useSpecBlocks(runnerRoot, specPaths, params.projectId);
 
   // Tab switches are written into the URL with replaceState (no history
   // spam): /projects/:id?tab=summary. "tests" (Playwright Editor) is the

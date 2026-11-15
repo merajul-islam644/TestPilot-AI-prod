@@ -729,6 +729,26 @@ export function useTestWorkspace(project: Project) {
         }).catch((error) => console.warn("[TestPilot] Workspace binding publish failed:", error));
       }
       setPaths(candidates);
+      // Mirror runnable spec CONTENT to the gateway: an invited viewer's
+      // browser lives on another machine where localhost:9090 does not
+      // exist — the gateway copy is the only way their suites/run views
+      // can parse tests and steps. Idempotent upserts, spec files only,
+      // the same 200 KB cap the runner enforces; failures stay silent
+      // (the mirror is a fallback, never a workload).
+      if (!fsaHandle) {
+        const runnable = candidates.filter((path) => isRunnableSpecPath(path));
+        void (async () => {
+          for (const path of runnable) {
+            try {
+              const content = await io.readUserFile({ root: rootPath, path });
+              if (content === null || content.length > 200_000) continue;
+              await cloud.saveTestFile({ projectId: project.id, path, content });
+            } catch (error) {
+              console.warn("[TestPilot] Spec mirror skipped:", path, error);
+            }
+          }
+        })();
+      }
       clearAutosaves();
       setContents({});
       setSavedContents({});
@@ -1031,6 +1051,11 @@ export function useTestWorkspace(project: Project) {
       await io.writeUserFile({ root, path, content });
       setSavedContents((prev) => ({ ...prev, [path]: content }));
       setSaveState(path, "saved");
+      // Keep the gateway mirror current for remote viewers (same cap).
+      if (isRunnableSpecPath(path) && content.length <= 200_000) {
+        void cloud.saveTestFile({ projectId: project.id, path, content })
+          .catch((error) => console.warn("[TestPilot] Spec mirror failed:", path, error));
+      }
       if (baseURL !== savedBaseURL) {
         writeSavedSettings(project.id, baseURL);
         setSavedBaseURL(baseURL);
@@ -1090,6 +1115,10 @@ export function useTestWorkspace(project: Project) {
       setSavedContents((prev) => ({ ...prev, [clean]: content }));
       setGitBaselines((prev) => ({ ...prev, [clean]: content }));
       setCreatedPath(clean);
+      if (isRunnableSpecPath(clean)) {
+        void cloud.saveTestFile({ projectId: project.id, path: clean, content })
+          .catch((error) => console.warn("[TestPilot] Spec mirror failed:", clean, error));
+      }
       return true;
     } catch (error) {
       console.warn("[TestPilot] File create failed:", error);
@@ -1258,6 +1287,13 @@ export function useTestWorkspace(project: Project) {
       // Already gone (another editor/git) — treat as success.
     }
     setPaths((prev) => prev.filter((path) => !victimPaths.has(path)));
+    // The gateway mirror follows the disk: deleted specs leave no ghost
+    // tests in a remote viewer's tree.
+    for (const victim of victimPaths) {
+      if (isRunnableSpecPath(victim)) {
+        void cloud.deleteTestFile({ projectId: project.id, path: victim }).catch(() => undefined);
+      }
+    }
     const purge = <T,>(prev: Record<string, T>): Record<string, T> => {
       const next = { ...prev };
       for (const path of victimPaths) delete next[path];

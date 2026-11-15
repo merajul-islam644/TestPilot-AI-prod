@@ -16,7 +16,7 @@ import { CaseTree } from "../../shared/ui/CaseTree";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { SuiteStatusBadge } from "../../shared/ui/StatusBadge";
-import { getWorkspaceInfo, useWorkspaceInfo } from "../../shared/workspaceRegistry";
+import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
 import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
 import { readSavedRoot } from "../workbench/data/useTestWorkspace";
 import { useRunColumns } from "../runs/runColumns";
@@ -72,7 +72,7 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
     : savedRoot
       ? null // a local FSA root can't be read here and must not fall back
       : binding?.mode === "runner" && binding.root ? binding.root : null;
-  const blocks = useSpecBlocks(runnerRoot, specPaths);
+  const blocks = useSpecBlocks(runnerRoot, specPaths, derivedProjectId ?? undefined);
   const latestRunnerRun = useMemo(
     () => suiteRuns
       .filter((run) => runTrigger(run) === "runner" && (run.status === "passed" || run.status === "failed"))
