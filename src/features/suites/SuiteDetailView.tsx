@@ -17,6 +17,7 @@ import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 import { getWorkspaceInfo, useWorkspaceInfo } from "../../shared/workspaceRegistry";
+import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
 import { readSavedRoot } from "../workbench/data/useTestWorkspace";
 import { useRunColumns } from "../runs/runColumns";
 
@@ -41,23 +42,47 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
   // record so historic runs' suites still open. The subscription makes the
   // view track folder open/close for derived ids.
   const derivedProjectId = suiteId.startsWith(PLAYWRIGHT_SUITE_ID_PREFIX) ? suiteId.slice(PLAYWRIGHT_SUITE_ID_PREFIX.length) : null;
-  useWorkspaceInfo(derivedProjectId ?? "");
+  const localWorkspace = useWorkspaceInfo(derivedProjectId ?? "");
+  // A browser that never opened the folder (every data-viewer's browser)
+  // has an EMPTY local registry — without the gateway binding published by
+  // whichever browser did open it, the whole suite tree used to vanish and
+  // only a run's already-reported steps showed anywhere. The runner serves
+  // the same disk to every browser on this machine, so the binding's spec
+  // list parses the ENTIRE suite identically here.
+  const binding = useWorkspaceBinding(derivedProjectId ?? "", !localWorkspace);
+  const workspace = localWorkspace ?? (binding?.root ? {
+    root: binding.root,
+    filesCount: binding.specPaths?.length ?? 0,
+    specPaths: binding.specPaths ?? [],
+    updatedAt: 0
+  } : null);
   const derived = derivedProjectId ? derivedSuiteForProject(derivedProjectId) : null;
-  const specPaths = derived && derivedProjectId ? getWorkspaceInfo(derivedProjectId)?.specPaths ?? [] : [];
+  const specPaths = derived && derivedProjectId ? workspace?.specPaths ?? [] : [];
   const suite = derived ?? suiteById(suiteId);
   const suiteRuns = useMemo(() => runs.filter((run) => run.suiteId === suiteId), [suiteId, runs]);
 
   // The block list: parse every spec of the (runner-mode) workspace and
   // attach the latest finished runner run's per-case/per-step results.
   // Files unreadable (runner offline, FSA workspace) fall back to the
-  // plain path list below.
+  // plain path list below. Local folder wins; a gateway binding's runner
+  // root is read-only-fallback (same model as RunDetailView).
   const savedRoot = derivedProjectId ? readSavedRoot(derivedProjectId) : null;
-  const runnerRoot = savedRoot?.mode === "runner" ? savedRoot.root : null;
+  const runnerRoot = savedRoot?.mode === "runner"
+    ? savedRoot.root
+    : savedRoot
+      ? null // a local FSA root can't be read here and must not fall back
+      : binding?.mode === "runner" && binding.root ? binding.root : null;
   const blocks = useSpecBlocks(runnerRoot, specPaths);
   const latestRunnerRun = useMemo(
     () => suiteRuns
       .filter((run) => runTrigger(run) === "runner" && (run.status === "passed" || run.status === "failed"))
       .sort((a, b) => b.startedAt - a.startedAt)[0],
+    [suiteRuns]
+  );
+  // A suite's LIVE run — surfaced in the specs panel header so a viewer
+  // can walk straight into the executing tree, not just finished runs.
+  const liveSuiteRun = useMemo(
+    () => suiteRuns.find((run) => runTrigger(run) === "runner" && (run.status === "running" || run.status === "pending")) ?? null,
     [suiteRuns]
   );
   const latestCases = useMemo(
@@ -117,9 +142,11 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
         <div className="panel" style={{ marginBottom: 14 }}>
           <div className="panel-head">
             <h3 className="panel-title">{t("suite.specs")}</h3>
-            {!contentOnly && latestRunnerRun ? (
-              <button className="link-button" onClick={() => onOpenRun(latestRunnerRun.id)}>
-                {t("suite.latestRun")}: {formatRelative(latestRunnerRun.startedAt)}
+            {!contentOnly && (liveSuiteRun ?? latestRunnerRun) ? (
+              <button className="link-button" onClick={() => onOpenRun((liveSuiteRun ?? latestRunnerRun)!.id)}>
+                {liveSuiteRun
+                  ? `${t("status.running")} — ${liveSuiteRun.progress ?? 0}%`
+                  : `${t("suite.latestRun")}: ${formatRelative(latestRunnerRun!.startedAt)}`}
               </button>
             ) : null}
           </div>

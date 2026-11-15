@@ -6,6 +6,7 @@ import type { TranslationKey } from "../../lib/i18n/dictionary";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { RunStatusBadge } from "../../shared/ui/StatusBadge";
+import { useIsDataViewer } from "../access/useDataViewer";
 
 const STATUS_ROWS: { descKey: TranslationKey; status: RunStatus }[] = [
   { status: "passed", descKey: "help.statuses.runPassed" },
@@ -41,6 +42,9 @@ export function HelpPage() {
   const { t } = useT();
   const { navigate } = useRoute();
   const { openNewRun } = useShell();
+  // The help menu itself is hidden for viewer-role users; a viewer who
+  // reaches the page by URL still gets no run-dispatch shortcut.
+  const viewer = useIsDataViewer();
   const modifier = /mac|iphone|ipad/i.test(navigator.platform) ? "⌘" : "Ctrl";
 
   return (
@@ -74,7 +78,7 @@ export function HelpPage() {
               <div>
                 <h4>{t("help.start.three.title")}</h4>
                 <p>{t("help.start.three.desc")}</p>
-                <button className="tertiary-button" onClick={openNewRun}><Play size={16} /> {t("command.startRun")}</button>
+                {viewer ? null : <button className="tertiary-button" onClick={openNewRun}><Play size={16} /> {t("command.startRun")}</button>}
               </div>
             </li>
           </ol>

@@ -32,6 +32,15 @@
 // re-dispatched (their adopted records show the real outcome); only
 // never-started folders continue.
 //
+// The queue is ALSO published to the runner on every state change (plus
+// a 10 s heartbeat), so every OTHER browser on this machine renders the
+// same queue from GET /batch — same badge, same cards. The driving
+// browser keeps full control (per-card skip); a viewer's header Stop
+// sets a flag the owning loop polls between projects, and its live-run
+// cancel works through the shared gateway record as anywhere else. The
+// runner expires a silent batch after 45 s, so a dead owner tab can
+// never freeze the other browsers' views.
+//
 // The workbench's per-project switcher stays authoritative for its own
 // clone; collisions with it are handled by: one checkout per distinct
 // root, a confirm dialog listing every current → target move, per-root
@@ -51,10 +60,12 @@ import type { Run } from "../../lib/demo/data";
 import { localFolder } from "../../lib/workspace/localFolder";
 import type { FolderNode } from "../../lib/workspace/localFolder";
 import { collectImportedHelpers, isRunnableSpecPath, pathSkipReason, workbenchPathFilter } from "../../lib/workspace/importFiles";
-import { RUNNER_MAX_FILES, runnerBusy } from "../../lib/runner/client";
+import { RUNNER_MAX_FILES, clearRunnerBatch, fetchRunnerBatch, putRunnerBatch, runnerBusy, skipRunnerBatch, stopRunnerBatch } from "../../lib/runner/client";
+import type { RunnerBatch, RunnerBatchCard, RunnerBatchCardState } from "../../lib/runner/client";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { getDefaultEnvironment } from "../../shared/useWorkspaceName";
 import { formatRelative } from "../../lib/format";
+import { useIsDataViewer } from "../access/useDataViewer";
 
 type RootGroup = {
   root: string;
@@ -68,8 +79,8 @@ type RootGroup = {
   note: string;
 };
 
-type CardRunState = "queued" | "running" | "passed" | "failed" | "cancelled";
-type CardRun = { state: CardRunState; detail?: string; at?: number };
+type CardRunState = RunnerBatchCardState;
+type CardRun = RunnerBatchCard;
 type BatchQueue = { done: number; current: string; total: number };
 /** Everything the dispatch loop needs per folder — persisted so a reload
  *  can resume the queue without the component that started it. */
@@ -120,8 +131,77 @@ function persistBatch(): void {
 function patchBatch(patch: Partial<BatchState>): void {
   batchState = { ...batchState, ...patch };
   persistBatch();
+  publishBatch();
   for (const listener of batchListeners) listener();
 }
+
+// ---------------------------------------------------------------------------
+// Published-queue view — what OTHER browsers see. This page's batch owner
+// publishes every state change to the runner (below); a second browser
+// polls GET /batch through the component and renders the SAME queue,
+// badge and card states from this mirror. The owner's own store always
+// outranks the mirror while it holds the newer batch.
+// ---------------------------------------------------------------------------
+let viewerBatch: RunnerBatch | null = null;
+let viewerJson = "null";
+const viewerListeners = new Set<() => void>();
+
+function setViewerBatch(next: RunnerBatch | null): void {
+  const json = JSON.stringify(next);
+  if (json === viewerJson) return;
+  viewerJson = json;
+  viewerBatch = next;
+  for (const listener of viewerListeners) listener();
+}
+
+function subscribeViewer(listener: () => void): () => void {
+  viewerListeners.add(listener);
+  return () => viewerListeners.delete(listener);
+}
+
+function useViewerBatch(): RunnerBatch | null {
+  return useSyncExternalStore(subscribeViewer, () => viewerBatch);
+}
+
+// Every owner-side state change ALSO publishes to the runner so the other
+// browsers on this machine see the same queue. Transitions can fire faster
+// than a round trip and an older PUT landing after a newer one would flip
+// a card backwards — so publishes serialize through one promise chain,
+// and each chained run reads the CURRENT state (rapid patches coalesce
+// into the newest view).
+let publishChain: Promise<void> = Promise.resolve();
+
+function toPublishedBatch(): RunnerBatch {
+  return {
+    startedAt: batchState.startedAt ?? Date.now(),
+    queue: batchState.queue,
+    projects: batchState.candidates.map((candidate) => ({ key: candidate.root, label: candidate.label, leadId: candidate.leadId })),
+    states: batchState.runStates,
+    stopRequested: false
+  };
+}
+
+function publishBatch(): void {
+  publishChain = publishChain.then(async () => {
+    const hasContent = batchState.queue !== null || Object.keys(batchState.runStates).length > 0;
+    try {
+      if (hasContent) await putRunnerBatch(toPublishedBatch());
+      else await clearRunnerBatch();
+    } catch {
+      // Runner down (or an older one without /batch) — this page's own
+      // store still drives everything; viewers keep their last view.
+    }
+  });
+}
+
+// Heartbeat: a long single-project run can sit between transitions for
+// minutes, and the runner expires a silent batch after 45 s — an owner
+// whose tab died must never freeze everyone else's view. Top up the beat
+// every 10 s while this page holds batch content (a no-op tick when it
+// doesn't, so an idle Overview sends nothing).
+window.setInterval(() => {
+  if (batchState.queue !== null || Object.keys(batchState.runStates).length > 0) publishBatch();
+}, 10_000);
 
 /** Set or clear one card's batch state (null clears). */
 function setCardRun(root: string, card: CardRun | null): void {
@@ -141,6 +221,16 @@ function useBatch(): { queue: BatchQueue | null; runStates: Record<string, CardR
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Stop / skip requests viewers pressed on OTHER browsers' views of OUR
+ *  queue (POST /batch/stop, POST /batch/skip). The owning loop re-reads
+ *  these between projects — a mid-run stop still cancels the live run
+ *  through the normal cancel path, and this check ends the queue right
+ *  after. */
+async function publishedQueueFlags(): Promise<{ stop: boolean; skipped: string[] }> {
+  const batch = await fetchRunnerBatch();
+  return { stop: batch?.stopRequested === true, skipped: batch?.skipped ?? [] };
+}
 
 /** The runner refuses files over its per-file cap (mirrors NewRunModal
  *  and the project page's direct dispatch). */
@@ -224,6 +314,13 @@ async function waitForRunnerIdle(): Promise<"idle" | "busy" | "unreachable"> {
 async function dispatchCandidate(candidate: BatchCandidate): Promise<{ ok: boolean; detail: string }> {
   setCardRun(candidate.root, { state: "running" });
   try {
+    // A project deleted after the batch was queued must not resurrect: its
+    // card vanishes on the next probe, but this queue still holds its slot
+    // — dispatching it would create a fresh run row for a ghost project.
+    if (!projects.some((project) => project.id === candidate.leadId)) {
+      setCardRun(candidate.root, null);
+      return { ok: false, detail: "project deleted" };
+    }
     // Specs are enumerated FRESH from the folder (same filters the
     // editor applies), so each queued project reads its branch's
     // current content — not a registry snapshot from open time.
@@ -358,7 +455,20 @@ async function resumeBatchIfNeeded(): Promise<void> {
   let done = 0;
   for (const candidate of candidates) {
     if (batchStop.stop) break;
+    // Viewer stop/skip pressed from another browser ends the queue or
+    // drops this folder the same way a local skip would. Only a card
+    // that hasn't settled yet may be skipped — a stale flag must never
+    // erase a finished result.
+    const flags = await publishedQueueFlags();
+    if (flags.stop) {
+      batchStop.stop = true;
+      break;
+    }
     const state = batchState.runStates[candidate.root]?.state;
+    if (flags.skipped.includes(candidate.root) && (state === undefined || state === "queued")) {
+      batchStop.skip.add(candidate.root);
+      setCardRun(candidate.root, null);
+    }
     // Finished (or already stopped) before the reload — keep it counted, move on.
     if (state === "passed" || state === "failed" || state === "cancelled") {
       done += 1;
@@ -397,8 +507,35 @@ async function resumeBatchIfNeeded(): Promise<void> {
 }
 
 export function GlobalBranchSwitcher() {
+  // The data-viewer role SEES this section — per-folder results are the
+  // page's best at-a-glance view — but none of its controls: the viewer
+  // gates live in the header (picker/re-check/run/stop) and the cards
+  // (run/skip/cancel) below.
+  const viewer = useIsDataViewer();
   const { runs } = useDemoState();
-  const { queue, runStates, startedAt: batchStartedAt } = useBatch();
+  const own = useBatch();
+  const published = useViewerBatch();
+  // This page's own store wins while it holds the newer batch; a batch
+  // another browser started AFTER ours takes over the view through the
+  // runner's published document (>= keeps an equal own batch in charge,
+  // which is the reload-resume case — the same document both ways).
+  const viewIsOwn = own.startedAt != null && (published === null || own.startedAt >= published.startedAt);
+  const queue = viewIsOwn ? own.queue : published?.queue ?? null;
+  // A skipped card vanishes from the viewer's board too — the published
+  // doc's skipped[] is the shared truth, so even after the 3 s poll
+  // re-fetches the owner's not-yet-updated document the card stays gone.
+  const viewerRunStates = useMemo(() => {
+    if (!published) return {};
+    const skipped = published.skipped ?? [];
+    if (skipped.length === 0) return published.states;
+    const states: Record<string, CardRun> = {};
+    for (const [key, value] of Object.entries(published.states)) {
+      if (!skipped.includes(key)) states[key] = value;
+    }
+    return states;
+  }, [published]);
+  const runStates = viewIsOwn ? own.runStates : viewerRunStates;
+  const batchStartedAt = (viewIsOwn ? own.startedAt : published?.startedAt) ?? null;
   const [groups, setGroups] = useState<RootGroup[]>([]);
   const [unbound, setUnbound] = useState<{ id: string; name: string }[]>([]);
   const [probing, setProbing] = useState(true);
@@ -487,6 +624,19 @@ export function GlobalBranchSwitcher() {
     void resumeBatchIfNeeded();
   }, []);
 
+  // Mirror the runner's published batch every 3 s so a queue another
+  // browser is driving shows up here identically. The owner's own view
+  // outranks the mirror (above), so for the driving browser this poll is
+  // inert; for everyone else it IS the queue view.
+  useEffect(() => {
+    const tick = () => {
+      void fetchRunnerBatch().then(setViewerBatch);
+    };
+    tick();
+    const timer = window.setInterval(tick, 3_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const clones = useMemo(() => groups.filter((group) => group.branch), [groups]);
   /** Folders this machine can actually dispatch (saved runner roots). */
   const runCandidates = useMemo(() => groups.filter((group) => group.local), [groups]);
@@ -504,7 +654,9 @@ export function GlobalBranchSwitcher() {
   const pickerValue = clones[0]?.branch ?? "";
 
   function requestSwitch(name: string) {
-    if (switching || probing || queue) return;
+    // A run executing anywhere freezes the branch, same as the picker's
+    // disabled state above.
+    if (switching || probing || queue || runnerActive) return;
     if (clones.every((group) => group.branch === name)) return;
     setTarget(name);
   }
@@ -544,10 +696,34 @@ export function GlobalBranchSwitcher() {
     }
   }
 
+  /** ✕ on a queued card — works from ANY browser. The owner skips through
+   *  its local loop state; a viewer sets the published skip flag (the
+   *  owning loop drops the folder when it reaches it) and clears its own
+   *  card immediately, with the doc's skipped[] keeping it cleared across
+   *  polls. */
+  function skipQueuedCard(root: string) {
+    if (viewIsOwn) {
+      batchStop.skip.add(root);
+      setCardRun(root, null);
+      return;
+    }
+    void skipRunnerBatch(root);
+    if (published) {
+      const states = { ...published.states };
+      delete states[root];
+      setViewerBatch({ ...published, states, skipped: [...(published.skipped ?? []), root] });
+    }
+  }
+
   /** Stops the queue after the project currently running, cancelling its
-   *  run through the same path the Runs page uses (record + runner). */
+   *  run through the same path the Runs page uses (record + runner). When
+   *  the queue on screen belongs to ANOTHER browser, this page can't flip
+   *  the owner's local loop switches — it sets the published stop flag
+   *  instead (the owning loop polls it between projects) and cancels the
+   *  live run the same way. */
   function stopQueue() {
-    batchStop.stop = true;
+    if (viewIsOwn && own.queue) batchStop.stop = true;
+    else void stopRunnerBatch();
     if (activeRunnerRun) cancelRun(activeRunnerRun.runId);
   }
 
@@ -585,6 +761,18 @@ export function GlobalBranchSwitcher() {
     let done = 0;
     for (const candidate of candidates) {
       if (batchStop.stop) break;
+      // Viewer stop/skip pressed from another browser (same guard rules
+      // as the resume loop below — never erase a settled card).
+      const flags = await publishedQueueFlags();
+      if (flags.stop) {
+        batchStop.stop = true;
+        break;
+      }
+      const pending = batchState.runStates[candidate.root]?.state;
+      if (flags.skipped.includes(candidate.root) && (pending === undefined || pending === "queued")) {
+        batchStop.skip.add(candidate.root);
+        setCardRun(candidate.root, null);
+      }
       // The user ✕-ed this card out of the queue while it was waiting.
       if (batchStop.skip.has(candidate.root)) continue;
       patchBatch({ queue: { done, current: candidate.label, total: candidates.length } });
@@ -603,16 +791,27 @@ export function GlobalBranchSwitcher() {
   // a project page, or adopted after a reload — blocks a new batch and
   // gets a header stop control, even when the batch queue itself is gone.
   const runnerActive = Boolean(activeRunnerRun);
+  // The header badge mirrors the queue style for ANY executing run: a
+  // single dispatch (from a project page) has no queue, but its name +
+  // live percentage say more than a bare "Runner busy" ever did.
+  const activeRun = activeRunnerRun ? runs.find((entry) => entry.id === activeRunnerRun.runId) ?? null : null;
 
   return (
     <div aria-label="Global branch control and batch runs" className="gb-section" role="region">
       <div className="gb-head">
         <span className="gb-title"><GitBranch size={13} /> Branch &amp; runs</span>
-        {!probing && clones.length > 0 ? (
+        {/* The data-viewer role sees the RESULTS (cards, progress, queue
+            badge) but none of the controls — no branch switcher, no
+            re-check, no run/stop of any kind. */}
+        {!viewer && !probing && clones.length > 0 ? (
           <div className="gb-picker">
             <BranchPicker
               branches={allBranches}
-              disabled={switching || probing || Boolean(queue)}
+              /* While ANY suite executes — batch queue or a single dispatch
+                 from anywhere — the branch is effectively frozen: the run
+                 read its specs from the current branch, so switching
+                 mid-run would only scramble what the results refer to. */
+              disabled={switching || probing || Boolean(queue) || runnerActive}
               onChange={requestSwitch}
               value={pickerValue}
             />
@@ -624,21 +823,26 @@ export function GlobalBranchSwitcher() {
             <Loader2 className="gb-spin" size={12} />
             {queue.done + 1}/{queue.total} — {queue.current}
           </span>
+        ) : activeRun ? (
+          <span className="gb-overall">
+            <Loader2 className="gb-spin" size={12} />
+            {activeRun.name} — {progressPct(activeRun)}%
+          </span>
         ) : runnerActive ? (
           <span className="gb-overall"><Loader2 className="gb-spin" size={12} /> Runner busy</span>
         ) : null}
         {/* Hidden entirely while anything executes — a re-check mid-run
             would only confuse the counters shown on the cards. */}
-        {!queue && !runnerActive ? (
+        {!viewer && !queue && !runnerActive ? (
           <button aria-label="Re-check folders" className="gb-refresh" disabled={probing || switching} onClick={() => void probe()} title="Re-check every folder's branch" type="button">
             <RefreshCw size={13} />
           </button>
         ) : null}
-        {queue ? (
+        {queue && !viewer ? (
           <button className="gb-stop secondary-button" onClick={stopQueue} title="Stop the whole batch after the project currently running" type="button">
             <Square size={11} /> Stop
           </button>
-        ) : runnerActive ? (
+        ) : runnerActive && !viewer ? (
           <button
             className="gb-stop secondary-button"
             onClick={() => { if (activeRunnerRun) cancelRun(activeRunnerRun.runId); }}
@@ -647,7 +851,7 @@ export function GlobalBranchSwitcher() {
           >
             <Square size={11} /> Stop run
           </button>
-        ) : (
+        ) : !viewer ? (
           <button
             className="gb-run primary-button"
             disabled={runCandidates.length === 0 || switching || runnerActive}
@@ -661,7 +865,7 @@ export function GlobalBranchSwitcher() {
           >
             <Play size={12} /> Run all projects
           </button>
-        )}
+        ) : null}
       </div>
 
       {probing ? (
@@ -716,7 +920,7 @@ export function GlobalBranchSwitcher() {
                     {cardRun?.state === "cancelled" ? <CircleSlash className="gb-dim" size={13} /> : null}
                     {cardRun?.state === "passed" ? <CircleCheck className="gb-ok" size={13} /> : null}
                     {cardRun?.state === "failed" ? <CircleX className="gb-bad" size={13} /> : null}
-                    {live ? (
+                    {live && !viewer ? (
                       <button
                         className="gb-card-cancel"
                         onClick={() => cancelRun(live.id)}
@@ -726,20 +930,21 @@ export function GlobalBranchSwitcher() {
                         <Square size={10} />
                       </button>
                     ) : null}
-                    {cardRun?.state === "queued" ? (
+                    {/* Skip works from ANY browser — the owner skips
+                        locally, a viewer sets the shared skip flag the
+                        owning loop honors between projects. The data-viewer
+                        role never skips: results are read-only. */}
+                    {!viewer && cardRun?.state === "queued" ? (
                       <button
                         className="gb-card-cancel"
-                        onClick={() => {
-                          batchStop.skip.add(group.root);
-                          setCardRun(group.root, null);
-                        }}
+                        onClick={() => skipQueuedCard(group.root)}
                         title="Skip this project — remove it from the queue"
                         type="button"
                       >
                         <X size={12} />
                       </button>
                     ) : null}
-                    {group.local ? (
+                    {viewer ? null : group.local ? (
                       <button
                         className="gb-card-run"
                         disabled={Boolean(queue) || switching}

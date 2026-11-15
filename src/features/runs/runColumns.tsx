@@ -150,11 +150,16 @@ export function useRunStatsColumns({ onCancel }: { onCancel?: (run: Run) => void
       key: "rate",
       header: t("overview.recent.passingRate"),
       render: (run) => {
-        // Rate only means something once tests have finished; a live or
-        // never-started row shows an em dash instead of a fake 0% or an
-        // ellipsis that reads as "still loading".
+        // Finished runs: passed of everything planned. A LIVE run shows
+        // its rate so far — passed of everything already executed (✓+✗)
+        // — so the column tracks the run as results stream in (~2 s
+        // progress emits re-render the row) and converges on the final
+        // number. Nothing executed yet: an em dash, never a fake 0%.
         if (run.total > 0 && run.status !== "running" && run.status !== "pending") {
           return <span className="num">{formatPercent(run.passed / run.total, 1)}</span>;
+        }
+        if (run.status === "running" && run.passed + run.failed > 0) {
+          return <span className="num">{formatPercent(run.passed / (run.passed + run.failed), 1)}</span>;
         }
         return <span className="num cell-muted">—</span>;
       },

@@ -9,6 +9,7 @@ import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Select } from "../../shared/ui/select";
+import { useIsDataViewer } from "../access/useDataViewer";
 import { RUN_STATUS_KEYS, useRunStatsColumns } from "./runColumns";
 
 /** Same page size as the Overview table so both lists read identically. */
@@ -18,14 +19,16 @@ export function RunsPage() {
   const { runs } = useDemoState();
   const { navigate } = useRoute();
   const { t } = useT();
+  const viewer = useIsDataViewer();
   const [projectFilter, setProjectFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<RunStatus | "">("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
 
   // Same stats table as the Overview's Recent test runs — one column
-  // system everywhere — with the stop button armed on live rows.
-  const runColumns = useRunStatsColumns({ onCancel: (run) => cancelRun(run.id) });
+  // system everywhere — with the stop button armed on live rows. The
+  // data-viewer role never stops anything: no stop column at all.
+  const runColumns = useRunStatsColumns(viewer ? undefined : { onCancel: (run) => cancelRun(run.id) });
 
   const filtered = useMemo(() => runs.filter((run: Run) => {
     if (projectFilter && run.projectId !== projectFilter) return false;

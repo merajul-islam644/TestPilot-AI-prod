@@ -30,6 +30,16 @@ export type DemoState = {
 };
 
 let state: DemoState = { status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null };
+
+// Session tombstones for deleted projects. A delete's optimistic local wipe
+// can be undercut while the gateway cascade sweeps in the background: the
+// 5 s adoption poll replaces state.runs WHOLESALE, and any full refresh
+// raced mid-sweep re-imports everything still on the wire. Tombstoning the
+// id keeps every import path (refresh snapshot, adoption poll) from
+// resurfacing the deleted project or its children for the rest of the
+// session — by the next one the sweep has long finished or retried its way
+// there.
+const deletedProjectIds = new Set<string>();
 const listeners = new Set<() => void>();
 const timers = new Map<string, number>();
 let runSequence = 1000;
@@ -107,22 +117,32 @@ async function refresh(): Promise<void> {
   refreshInFlight ??= (async () => {
     try {
       const snapshot = await cloud.loadDomain();
-      fillCatalog(projects, snapshot.projects);
-      fillCatalog(suites, snapshot.suites);
+      // Tombstones first: a project deleted this session never re-enters the
+      // catalog, however mid-sweep the gateway's answer still is — its
+      // children then vanish through the orphan guard below.
+      const liveProjectSnapshot = snapshot.projects.filter((project) => !deletedProjectIds.has(project.id));
+      fillCatalog(projects, liveProjectSnapshot);
+      // Orphan guard: children of a project the catalog no longer holds are
+      // unreachable rows. A page that (re)loaded while a project-delete
+      // cascade was still sweeping the gateway would otherwise resurrect the
+      // deleted project's suites/runs/issues/cases on EVERY page at once —
+      // and the same guard covers a cascade that half-failed server-side.
+      const projectIds = new Set(liveProjectSnapshot.map((project) => project.id));
+      fillCatalog(suites, snapshot.suites.filter((suite) => projectIds.has(suite.projectId)));
       // Runner case rows are secondary: a collection hiccup must not blank the
       // whole app, so they resolve to [] instead of failing the load.
-      const caseResults = await cloud.listCaseRecords().catch((error) => {
+      const caseResults = (await cloud.listCaseRecords().catch((error) => {
         console.warn("[TestPilot] CaseResult load failed:", error);
         return [] as cloud.StoredCase[];
-      });
+      })).filter((entry) => projectIds.has(entry.projectId));
       // Legacy default run names carried a "Playwright · " prefix; display
       // them as the bare project name so run headers read clean. Display-
       // level only — the stored record is left as written.
-      const runs = snapshot.runs.map((run) => {
+      const runs = snapshot.runs.filter((run) => projectIds.has(run.projectId)).map((run) => {
         const projectName = projects.find((entry) => entry.id === run.projectId)?.name;
         return projectName && run.name === `Playwright · ${projectName}` ? { ...run, name: projectName } : run;
       });
-      emit({ status: "ready", runs: sortRuns(dedupeRuns(runs)), issues: sortIssues(snapshot.issues), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
+      emit({ status: "ready", runs: sortRuns(dedupeRuns(runs)), issues: sortIssues(snapshot.issues.filter((issue) => projectIds.has(issue.projectId))), caseResults: sortCases(caseResults), activeRunnerRun: state.activeRunnerRun });
       // Cross-browser suite heal: the "Playwright tests" catalog row is what
       // makes Test Suites visible from a browser that never opened the
       // folder (derivedSuiteForProject falls back to it). Rows were lost to
@@ -137,6 +157,7 @@ async function refresh(): Promise<void> {
       // A page that stays OPEN must also see runs dispatched from ANOTHER
       // browser — the boot reconcile above only fires once per load.
       startRemoteRunAdoption();
+      startProjectWatch();
     } catch (error) {
       // The exact gateway reason (GraphQL errors ride in HTTP 200 bodies and
       // are unpacked by cloud.assertGateway) must reach the console -- an
@@ -164,6 +185,9 @@ export function reloadDomain(): Promise<void> {
  */
 export function resetForOrgSwitch(): void {
   refreshStarted = false;
+  // The tombstones belong to the previous org's session — a project id can
+  // legitimately exist in another organization's scope.
+  deletedProjectIds.clear();
   fillCatalog(projects, []);
   fillCatalog(suites, []);
   emit({ status: "loading", runs: [], issues: [], caseResults: [], activeRunnerRun: null });
@@ -299,11 +323,15 @@ async function adoptRemoteRun(): Promise<void> {
     return;
   }
   // No row in this page's catalog — it was dispatched after our load. One
-  // focused runs refresh, then re-check before adopting.
+  // focused runs refresh, then re-check before adopting. The wholesale
+  // replacement must respect the catalog: a poll landing mid-delete-cascade
+  // would otherwise re-import the deleted project's runs over the
+  // optimistic wipe, every 5 s, until the sweep finished.
   try {
     const runs = await cloud.listRunRecords();
     if (state.activeRunnerRun) return;
-    emit({ ...state, runs: sortRuns(dedupeRuns(runs)) });
+    const projectIds = new Set(projects.map((project) => project.id));
+    emit({ ...state, runs: sortRuns(dedupeRuns(runs.filter((run) => projectIds.has(run.projectId)))) });
   } catch (error) {
     console.warn("[TestPilot] Runs refresh for adoption failed:", error);
     return;
@@ -317,6 +345,34 @@ function startRemoteRunAdoption(): void {
   remoteAdoptionTimer = window.setInterval(() => {
     void adoptRemoteRun();
   }, REMOTE_ADOPTION_POLL_MS);
+}
+
+// --- Cross-tab project watch -------------------------------------------------
+// Another browser's project delete never notifies THIS page: its catalog —
+// and every list built from it — would keep showing the deleted project
+// until a manual reload. A slow probe lists just the Project collection;
+// the moment the gateway disagrees with the catalog, one tombstone-guarded
+// refresh resyncs everything (the orphan guard drops the children too).
+const PROJECT_WATCH_POLL_MS = 30_000;
+let projectWatchTimer: number | null = null;
+
+async function projectWatchTick(): Promise<void> {
+  if (state.status !== "ready") return;
+  try {
+    const gatewayProjects = await cloud.listProjectRecords();
+    if (state.status !== "ready") return;
+    const gatewayIds = new Set(gatewayProjects.map((project) => project.id));
+    const drifted = projects.some((project) => !gatewayIds.has(project.id) && !deletedProjectIds.has(project.id));
+    if (drifted) void refresh();
+  } catch {
+    // Unreachable gateway — retry on the next tick.
+  }
+}
+
+function startProjectWatch(): void {
+  if (projectWatchTimer !== null) return;
+  void projectWatchTick();
+  projectWatchTimer = window.setInterval(() => void projectWatchTick(), PROJECT_WATCH_POLL_MS);
 }
 
 /** Terminal "definitively dead" verdict for a stale record: cancelled with
@@ -456,6 +512,9 @@ function sortCases(cases: cloud.StoredCase[]): CaseResult[] {
         durationMs: entry.durationMs,
         error: entry.error || undefined,
         runId: entry.runId,
+        // Kept on the mapped row: project deletes filter case rows by it
+        // in memory (the gateway cascade does the same server-side).
+        projectId: entry.projectId,
         order: entry.order,
         file: entry.file ?? hit?.file,
         steps: entry.steps ?? hit?.steps
@@ -788,12 +847,38 @@ export function updateProject(projectId: string, patch: ProjectInput): void {
 /** Cascade delete: the UI drops the project and its records at once; the gateway rows follow in the background. */
 export function deleteProject(projectId: string): void {
   const name = projects.find((entry) => entry.id === projectId)?.name;
+  // A project whose suite is executing cannot leave yet: the finishing run
+  // writes its own records back to the gateway (run row, per-case rows, one
+  // issue per failure), resurrecting exactly what the delete wiped — and
+  // the runner would keep burning through a ghost project's suite. Stop
+  // the run first; the delete is one click afterwards.
+  const liveRun = state.runs.find((entry) => entry.projectId === projectId && (entry.status === "running" || entry.status === "pending"));
+  if (liveRun) {
+    toast.error(translate("toast.deleteBlockedRunning"), { description: name });
+    return;
+  }
+  // Tombstone BEFORE the optimistic emit: every import path that races the
+  // background cascade (refresh, adoption poll) now agrees the project is
+  // gone and drops it and its children on sight.
+  deletedProjectIds.add(projectId);
   fillCatalog(projects, projects.filter((entry) => entry.id !== projectId));
   fillCatalog(suites, suites.filter((entry) => entry.projectId !== projectId));
+  // Per-case rows never went through before: the gateway cascade deletes
+  // them only in the background, so the deleted project's cases lingered
+  // in memory through every case-driven view. Gateway-loaded rows carry
+  // projectId; older rows fall back to their run's project (rows loaded
+  // before sortCases kept projectId have none and must go if their run
+  // belonged to the deleted project).
+  const removedRunIds = new Set(state.runs.filter((entry) => entry.projectId === projectId).map((entry) => entry.id));
   emit({
     ...state,
     issues: sortIssues(state.issues.filter((entry) => entry.projectId !== projectId)),
-    runs: sortRuns(state.runs.filter((entry) => entry.projectId !== projectId))
+    runs: sortRuns(state.runs.filter((entry) => entry.projectId !== projectId)),
+    caseResults: state.caseResults.filter((entry) => {
+      const caseProject = (entry as { projectId?: string }).projectId;
+      if (caseProject != null) return caseProject !== projectId;
+      return !entry.runId || !removedRunIds.has(entry.runId);
+    })
   });
   // The workspace binding is browser-local: without this cleanup a deleted
   // project leaves an orphan folder registry behind, and its stale spec
@@ -804,18 +889,32 @@ export function deleteProject(projectId: string): void {
     /* private mode — nothing to clean */
   }
   setWorkspaceInfo(projectId, null);
-  // The success toast waits for the gateway cascade to actually finish --
-  // firing it here would claim a deletion a fast refresh can disprove (the
-  // gateway rows outlive the optimistic list update for a few seconds).
+  // Say "deleted" NOW: the UI deletion is complete, and the refresh orphan
+  // guard keeps any racing snapshot from resurrecting the children — the
+  // old wait-for-the-cascade toast could land minutes later on a big
+  // project (or never reach a navigated-away user), reading as a dead
+  // button. The gateway sweep continues below; if it FAILS, the catch
+  // re-hydrates the project and its error toast corrects the record.
+  toast.success(translate("toast.projectDeleted"), { description: name });
   void cloud.deleteProjectRecord(projectId)
     .then(() => {
-      toast.success(translate("toast.projectDeleted"), { description: name });
+      // The gateway now matches the optimistic local wipe. Pull the true
+      // post-cascade state once more: a snapshot that raced the cascade
+      // (this tab reloading mid-sweep, another browser booting) can have
+      // resurrected orphaned children into memory, and nothing else
+      // refreshes after the background delete finishes. If a refresh is
+      // already in flight, wait it out first — refresh() would otherwise
+      // just join it and hand back the very snapshot we need to replace.
+      const settle = refreshInFlight ?? Promise.resolve();
+      void settle.then(() => refresh());
     })
     .catch((error) => {
       toast.error(translate("toast.syncFailed"), { description: name });
-      console.error("[TestPilot] Project delete failed:", error);
-      // The gateway kept the project -- re-hydrate so the list matches
-      // reality instead of hiding something that still exists.
+      console.error("[TestPilot] Project delete failed after retries:", error);
+      // The gateway kept the rows. The tombstone keeps this session honest
+      // with what the USER asked for — the project stays deleted on screen —
+      // while the error toast says the server-side sweep did not finish; a
+      // reload shows the gateway truth.
       void refresh();
     });
 }
@@ -829,6 +928,7 @@ export function resetDemoData() {
   for (const timeout of timers.values()) window.clearTimeout(timeout);
   for (const interval of timers.values()) window.clearInterval(interval);
   timers.clear();
+  deletedProjectIds.clear();
   for (const key of [...localStorage.keys()]) {
     if (key.startsWith("testpilot:")) localStorage.removeItem(key);
   }

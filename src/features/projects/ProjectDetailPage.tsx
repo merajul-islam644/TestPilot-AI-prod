@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, Play, Search } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
+import { useIsDataViewer } from "../access/useDataViewer";
 import { derivedSuiteForProject, projectById } from "../../lib/demo/data";
 import type { RunStatus } from "../../lib/demo/data";
 import { cancelRun, runPlaywrightTests, useActiveRunnerRun, useDemoState } from "../../lib/demo/store";
@@ -82,6 +83,12 @@ export function ProjectDetailPage() {
   const { runs, issues } = useDemoState();
   const { t } = useT();
   const [tab, setTabState] = useState<Tab>(initialTab);
+  // The data-viewer role has no editor: a viewer landing on ?tab=tests (or
+  // the default first tab) is pushed to the summary view instead.
+  const viewer = useIsDataViewer();
+  useEffect(() => {
+    if (viewer && tab === "tests") setTabState("summary");
+  }, [tab, viewer]);
   const [drill, setDrill] = useState<Drill | null>(initialDrill);
   const [startingRun, setStartingRun] = useState(false);
   // This page IS the project scope, so its Run Tests skips the global
@@ -169,8 +176,11 @@ export function ProjectDetailPage() {
 
   // Project-scoped drill callbacks: every row/link inside this page lands
   // here instead of the sidebar's global run/issue/suite routes. Live rows
-  // get the same stop button as the global runs list.
-  const runColumns = useRunColumns((run) => openDrill("run", run.id), { omitProject: true, onCancel: (run) => cancelRun(run.id) });
+  // get the same stop button as the global runs list — except for the
+  // data-viewer role, which never cancels anything.
+  const runColumns = useRunColumns((run) => openDrill("run", run.id), viewer
+    ? { omitProject: true }
+    : { omitProject: true, onCancel: (run) => cancelRun(run.id) });
   const issueColumns = useIssueColumns((issue) => openDrill("issue", issue.id), { omitProject: true });
 
   const project = projectById(params.projectId ?? "");
@@ -397,10 +407,12 @@ export function ProjectDetailPage() {
           {/* The project's primary action lives at TAB level — same row as
               the strip, right-aligned — not floating in the page header.
               Project-scoped: no modal, it runs this project's specs
-              directly, and stays disabled until a folder is open. */}
+              directly, and stays disabled until a folder is open. The
+              data-viewer role gets neither the Run action nor the editor
+              tab — the strip shows only the read-only views. */}
           <Tabs
             active={tab}
-            actions={(
+            actions={viewer ? undefined : (
               <button
                 className="primary-button"
                 disabled={!canRunDirect || startingRun || runInFlight}
@@ -412,7 +424,7 @@ export function ProjectDetailPage() {
               </button>
             )}
             onChange={setTab}
-            tabs={tabs}
+            tabs={viewer ? tabs.filter((entry) => entry.id !== "tests") : tabs}
           />
 
           {tab === "summary" ? (
@@ -548,16 +560,20 @@ export function ProjectDetailPage() {
                   </div>
                 </div>
                 <div style={{ alignItems: "center", display: "flex", flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
-                  <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
-                  <button
-                    className="primary-button"
-                    disabled={!canRunDirect || startingRun || runInFlight}
-                    onClick={() => void runProjectSpecs()}
-                    title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
-                    type="button"
-                  >
-                    <Play size={16} /> {startingRun ? t("newRun.starting") : t("suite.runNow")}
-                  </button>
+                  {viewer ? null : (
+                    <>
+                      <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
+                      <button
+                        className="primary-button"
+                        disabled={!canRunDirect || startingRun || runInFlight}
+                        onClick={() => void runProjectSpecs()}
+                        title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
+                        type="button"
+                      >
+                        <Play size={16} /> {startingRun ? t("newRun.starting") : t("suite.runNow")}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

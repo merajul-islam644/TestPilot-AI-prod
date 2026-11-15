@@ -86,6 +86,10 @@ function isTransientFailure(error: unknown): boolean {
   // retries below: a late orphan write may duplicate a row).
   if (/failed to fetch|networkerror|network error|err_http|http2/i.test(error.message)) return true;
   if (error.name === "BlocksApiError" && /\b401\b/.test(error.message)) return true;
+  // Rate limits and gateway-side hiccups: a long delete sweep fires hundreds
+  // of calls and the gateway starts shedding load — retrying a moment later
+  // is the whole point. Idempotent operations only (the delete sweep).
+  if (error.name === "BlocksApiError" && /\b(429|502|503|504)\b/.test(error.message)) return true;
   return /AUTH_NOT_AUTHENTICATED|not authenticated/i.test(error.message);
 }
 
@@ -483,6 +487,25 @@ async function listAllRecords(schema: SchemaName): Promise<DataRecord[]> {
 
 export type DomainSnapshot = { projects: Project[]; suites: Suite[]; runs: Run[]; issues: Issue[] };
 
+/**
+ * A create whose first attempt timed out client-side is retried by the
+ * transport wrapper; a gateway that accepted the first attempt slowly
+ * answers the second with a TWIN row carrying the same logical key — the
+ * user clicks once and sees several project cards. The read side therefore
+ * keeps one row per key (first wins; contents are identical).
+ */
+function dedupeRecordsByLogicalKey(records: DataRecord[]): DataRecord[] {
+  const seen = new Set<string>();
+  const kept: DataRecord[] = [];
+  for (const record of records) {
+    const key = asString(record.key);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    kept.push(record);
+  }
+  return kept;
+}
+
 async function listDomain(): Promise<DomainSnapshot> {
   const [allProjects, allSuites, allRuns, allIssues] = await Promise.all([
     listRecords("Project"),
@@ -492,10 +515,10 @@ async function listDomain(): Promise<DomainSnapshot> {
   ]);
   // Org scope: rows tagged for another organization never enter the
   // snapshot, and legacy untagged rows surface only under the Default org.
-  const projectRecords = allProjects.filter(recordMatchesActiveOrg);
-  const suiteRecords = allSuites.filter(recordMatchesActiveOrg);
-  const runRecords = allRuns.filter(recordMatchesActiveOrg);
-  const issueRecords = allIssues.filter(recordMatchesActiveOrg);
+  const projectRecords = dedupeRecordsByLogicalKey(allProjects.filter(recordMatchesActiveOrg));
+  const suiteRecords = dedupeRecordsByLogicalKey(allSuites.filter(recordMatchesActiveOrg));
+  const runRecords = dedupeRecordsByLogicalKey(allRuns.filter(recordMatchesActiveOrg));
+  const issueRecords = dedupeRecordsByLogicalKey(allIssues.filter(recordMatchesActiveOrg));
   const projects: Project[] = [];
   for (const record of projectRecords) {
     const project = fromProjectRecord(record);
@@ -552,6 +575,21 @@ export async function listRunRecords(): Promise<Run[]> {
   return runs;
 }
 
+/** Projects only — the cross-tab delete watch lists just this one
+ *  collection so a project another browser deleted drops off THIS page
+ *  within one poll instead of surviving until a manual reload. */
+export async function listProjectRecords(): Promise<Project[]> {
+  const projectRecords = dedupeRecordsByLogicalKey((await listRecords("Project")).filter(recordMatchesActiveOrg));
+  const projects: Project[] = [];
+  for (const record of projectRecords) {
+    const project = fromProjectRecord(record);
+    const itemId = recordItemId(record);
+    if (project.id && itemId) itemIds.Project.set(project.id, itemId);
+    if (project.id) projects.push(project);
+  }
+  return projects;
+}
+
 // ---------------------------------------------------------------------------
 // Writes -- called fire-and-forget by the store: a failed cloud write must
 // never break the UI; the record re-syncs on the next full load. The store
@@ -581,11 +619,33 @@ async function createRecord(schema: SchemaName, record: DataRecord): Promise<voi
   if (itemId) itemIds[schema].set(asString(record.key), itemId);
 }
 
+/**
+ * After a create settles, remove twin rows sharing its logical key — the
+ * transport wrapper's timeout-retry against a slow-but-successful gateway
+ * is exactly how they appear (see dedupeRecordsByLogicalKey). Keeps the
+ * registry's row; contents are identical, so which copy survives carries
+ * no information. A capped read is enough: anything beyond the cap never
+ * reached a list either, and the read-side dedupe still hides it.
+ */
+async function sweepDuplicateRows(schema: SchemaName, key: string, keepItemId?: string): Promise<void> {
+  const matches = (await listRecords(schema)).filter((record) => asString(record.key) === key);
+  if (matches.length <= 1) return;
+  const doomed = matches
+    .map(recordItemId)
+    .filter((id): id is string => Boolean(id) && id !== keepItemId);
+  for (let offset = 0; offset < doomed.length; offset += DELETE_CHUNK) {
+    await Promise.all(doomed.slice(offset, offset + DELETE_CHUNK).map(async (id) => {
+      assertGateway(await collections[schema].delete(id, { hardDelete: true }), `Dedupe ${schema}`);
+    }));
+  }
+}
+
 export async function createRunRecord(run: Run): Promise<void> {
   const data = assertGateway(await collections.Run.create(toRunRecord(run)), "Insert Run");
   const result = data.insertRun as { itemId?: unknown } | null | undefined;
   const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
   if (itemId) itemIds.Run.set(run.id, itemId);
+  await sweepDuplicateRows("Run", run.id, itemId);
 }
 
 export function updateRunRecord(run: Run): Promise<void> {
@@ -603,6 +663,7 @@ export async function createSuiteRecord(suite: Suite): Promise<void> {
   const result = data.insertSuite as { itemId?: unknown } | null | undefined;
   const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
   if (itemId) itemIds.Suite.set(suite.id, itemId);
+  await sweepDuplicateRows("Suite", suite.id, itemId);
 }
 
 export async function createIssueRecord(issue: Issue): Promise<void> {
@@ -610,6 +671,7 @@ export async function createIssueRecord(issue: Issue): Promise<void> {
   const result = data.insertIssue as { itemId?: unknown } | null | undefined;
   const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
   if (itemId) itemIds.Issue.set(issue.id, itemId);
+  await sweepDuplicateRows("Issue", issue.id, itemId);
 }
 
 export async function createProjectRecord(project: Project): Promise<void> {
@@ -617,6 +679,7 @@ export async function createProjectRecord(project: Project): Promise<void> {
   const result = data.insertProject as { itemId?: unknown } | null | undefined;
   const itemId = typeof result?.itemId === "string" && result.itemId ? result.itemId : undefined;
   if (itemId) itemIds.Project.set(project.id, itemId);
+  await sweepDuplicateRows("Project", project.id, itemId);
 }
 
 /**
@@ -689,9 +752,14 @@ async function deleteByRelist(schema: SchemaName, matches: (record: DataRecord) 
     const ids = records.filter(matches).map(recordItemId).filter((id): id is string => Boolean(id));
     if (ids.length === 0) break;
     for (let offset = 0; offset < ids.length; offset += DELETE_CHUNK) {
-      await Promise.all(ids.slice(offset, offset + DELETE_CHUNK).map(async (id) => {
-        assertGateway(await collections[schema].delete(id, { hardDelete: true }), `Delete ${schema}`);
-      }));
+      // Chunk-level transient retry: one blip must not abort a sweep that
+      // runs hundreds of calls deep. The sweep is idempotent — a retried
+      // chunk no-ops for rows an earlier attempt already removed.
+      await withTransientAuthRetry(`Delete chunk of ${schema}`, () =>
+        Promise.all(ids.slice(offset, offset + DELETE_CHUNK).map(async (id) => {
+          assertGateway(await collections[schema].delete(id, { hardDelete: true }), `Delete ${schema}`);
+        }))
+      );
     }
   }
 }
@@ -708,6 +776,24 @@ async function deleteByRelist(schema: SchemaName, matches: (record: DataRecord) 
  * or skipped -- so a delete never half-fails silently.
  */
 export async function deleteProjectRecord(projectId: string): Promise<void> {
+  // The sweep is idempotent (a relist finds nothing left to remove), so a
+  // failed attempt can simply run again: a gateway blip a hundred calls
+  // deep used to abort the whole cascade, and the failure refresh then
+  // pulled the deleted project straight back onto every page. Three spaced
+  // attempts ride out rate-limit windows without anyone noticing.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await sweepProjectRecords(projectId);
+      return;
+    } catch (error) {
+      if (attempt >= 3) throw error;
+      console.warn(`[TestPilot] Project delete sweep failed (attempt ${attempt}/3), retrying:`, error);
+      await new Promise((resolve) => setTimeout(resolve, attempt === 1 ? 8_000 : 20_000));
+    }
+  }
+}
+
+async function sweepProjectRecords(projectId: string): Promise<void> {
   const children = ["Suite", "Run", "Issue", "TestSpec", "CaseResult"] as SchemaName[];
   try {
     try {

@@ -6,6 +6,7 @@ import type { ThemePreference } from "../providers/ThemeProvider";
 import { useTheme } from "../providers/ThemeProvider";
 import { useShell } from "./ShellContext";
 import { primaryNavItems, secondaryNavItems } from "./navItems";
+import { useIsDataViewer } from "../../features/access/useDataViewer";
 
 type Command = { icon: LucideIcon; id: string; keywords?: string; label: string; run: () => void };
 
@@ -13,6 +14,9 @@ export function CommandPalette({ onClose, onNavigate, open }: { onClose: () => v
   const { t } = useT();
   const { setPreference } = useTheme();
   const { openNewRun } = useShell();
+  // The palette mirrors the shell: viewer-role users get no admin-menu
+  // entries and no Run Tests action at all.
+  const viewer = useIsDataViewer();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,7 +25,7 @@ export function CommandPalette({ onClose, onNavigate, open }: { onClose: () => v
   const groups = useMemo<{ id: string; items: Command[]; label: string }[]>(() => [
     {
       id: "nav",
-      items: [...primaryNavItems, ...secondaryNavItems].map((item) => ({
+      items: [...primaryNavItems, ...(viewer ? [] : secondaryNavItems)].map((item) => ({
         icon: item.icon,
         id: item.href,
         keywords: item.href,
@@ -32,7 +36,7 @@ export function CommandPalette({ onClose, onNavigate, open }: { onClose: () => v
     },
     {
       id: "actions",
-      items: [
+      items: viewer ? [] : [
         { icon: Play, id: "new-run", keywords: "run start execute", label: t("command.startRun"), run: () => openNewRun() }
       ],
       label: t("command.groupActions")
@@ -50,7 +54,7 @@ export function CommandPalette({ onClose, onNavigate, open }: { onClose: () => v
       })),
       label: t("command.groupTheme")
     }
-  ], [onNavigate, openNewRun, setPreference, t]);
+  ], [onNavigate, openNewRun, setPreference, t, viewer]);
 
   const normalized = query.trim().toLowerCase();
   const visibleGroups = groups

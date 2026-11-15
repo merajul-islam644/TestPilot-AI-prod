@@ -14,6 +14,7 @@ import { Sparkline } from "../../shared/charts/Sparkline";
 import { useWorkspaceInfos } from "../../shared/workspaceRegistry";
 import { ProjectFormModal } from "./ProjectFormModal";
 import { ProjectIcon } from "./ProjectIcon";
+import { useIsDataViewer } from "../access/useDataViewer";
 
 export function ProjectsPage() {
   const { runs } = useDemoState();
@@ -22,6 +23,8 @@ export function ProjectsPage() {
   useWorkspaceInfos();
   const { navigate } = useRoute();
   const { t } = useT();
+  // Data-viewer role: lists only — no create, no edit, no delete.
+  const viewer = useIsDataViewer();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Project | undefined>(undefined);
   const [deleting, setDeleting] = useState<Project | undefined>(undefined);
@@ -42,7 +45,7 @@ export function ProjectsPage() {
   return (
     <section>
       <PageHeader
-        actions={(
+        actions={viewer ? undefined : (
           <button className="primary-button" onClick={openCreate}>
             <Plus size={16} /> {t("projects.new")}
           </button>
@@ -95,26 +98,30 @@ export function ProjectsPage() {
                   <ChevronRight size={15} style={{ color: "hsl(var(--muted-foreground))" }} />
                 </div>
                 <div className="project-card-actions">
-                  <button
-                    className="icon-button"
-                    title={t("common.edit")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openEdit(project);
-                    }}
-                  >
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    className="icon-button"
-                    title={t("common.delete")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDeleting(project);
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  {viewer ? null : (
+                    <>
+                      <button
+                        className="icon-button"
+                        title={t("common.edit")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openEdit(project);
+                        }}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                      <button
+                        className="icon-button"
+                        title={t("common.delete")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDeleting(project);
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             );

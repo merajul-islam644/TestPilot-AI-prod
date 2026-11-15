@@ -273,6 +273,7 @@ export const defaultDictionary = {
   "toast.projectCreated": "Project created",
   "toast.projectUpdated": "Project updated",
   "toast.projectDeleted": "Project deleted",
+  "toast.deleteBlockedRunning": "A test is still running for this project — stop it first, then delete.",
   "toast.runStarted": "Test run started",
   "toast.runCancelled": "Run cancelled",
   "toast.issueUpdated": "Issue updated",

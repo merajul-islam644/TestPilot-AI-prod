@@ -18,9 +18,12 @@ import { bootstrapWorkspaceInfos, resetWorkspaceBootstrap } from "../../shared/w
 import { PageSkeleton } from "../../shared/ui/PageSkeleton";
 import { RouteErrorBoundary } from "../../shared/ui/ErrorFallback";
 import { useWorkspaceName } from "../../shared/useWorkspaceName";
+import { useIsDataViewer } from "../../features/access/useDataViewer";
 
 const COLLAPSED_KEY = "blocks-app:sidebar-collapsed";
 const MOBILE_QUERY = "(max-width: 880px)";
+/** Sidebar menus the data-viewer role never sees. */
+const VIEWER_HIDDEN_NAV = new Set(["/users", "/roles", "/organizations", "/help"]);
 
 function useIsMobile(): boolean {
   const [isMobile, setIsMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches);
@@ -37,6 +40,10 @@ function useIsMobile(): boolean {
 
 export function AppShell({ activePath, children, onNavigate }: { activePath: string; children: ReactNode; onNavigate: (path: string) => void }) {
   const isMobile = useIsMobile();
+  // The data-viewer role gets the read-only shell: no admin menus, no org
+  // switcher. Until the role check resolves this is TRUE — an admin's menus
+  // appear a beat later; a viewer never flashes them.
+  const viewer = useIsDataViewer();
   const [collapsedPref, setCollapsedPref] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "true");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newRunOpen, setNewRunOpen] = useState(false);
@@ -107,6 +114,11 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
     </a>
   );
 
+  // Viewer-role users never see the admin menus (users, roles,
+  // organizations, help); Settings stays — it holds their own MFA/profile
+  // preferences.
+  const visibleSecondary = secondaryNavItems.filter((item) => !(viewer && VIEWER_HIDDEN_NAV.has(item.href)));
+
   return (
     <ShellContext.Provider value={shell}>
       <div className="shell">
@@ -130,8 +142,12 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
           </div>
           <nav aria-label={t("app.name")}>
             {primaryNavItems.map(renderItem)}
-            <div className="nav-divider" role="presentation" />
-            {secondaryNavItems.map(renderItem)}
+            {visibleSecondary.length > 0 ? (
+              <>
+                <div className="nav-divider" role="presentation" />
+                {visibleSecondary.map(renderItem)}
+              </>
+            ) : null}
           </nav>
           <div className="sidebar-footer">
             <SidebarUser collapsed={collapsed} onNavigate={onNavigate} />
@@ -150,7 +166,7 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
               </button>
             ) : null}
             <div className="topbar-spacer" />
-            <OrgSwitcher />
+            {viewer ? null : <OrgSwitcher />}
             <NotificationsMenu />
             <ThemeToggle />
             <LanguageSwitcher />

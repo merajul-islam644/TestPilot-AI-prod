@@ -21,6 +21,7 @@ import { useWorkspaceInfo } from "../../shared/workspaceRegistry";
 import { useWorkspaceBinding } from "../../shared/useWorkspaceBinding";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { readSavedRoot } from "../workbench/data/useTestWorkspace";
+import { useIsDataViewer } from "../access/useDataViewer";
 import { RUN_STATUS_KEYS } from "./runColumns";
 
 const BROWSER_KEYS: Record<Run["browser"], string> = { chromium: "Chromium", webkit: "WebKit", firefox: "Firefox" };
@@ -46,6 +47,8 @@ export function RunDetailView({ crumbs, hideHeader = false, runId, onBack, onOpe
 }) {
   const { runs, issues, caseResults, activeRunnerRun } = useDemoState();
   const { t } = useT();
+  // Data-viewer role: the run is read-only — no cancel anywhere.
+  const viewer = useIsDataViewer();
   const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   const run = runs.find((entry) => entry.id === runId);
@@ -203,7 +206,7 @@ export function RunDetailView({ crumbs, hideHeader = false, runId, onBack, onOpe
           {crumbs ? <Breadcrumb items={crumbs} style={{ flex: "1 1 240px", marginBottom: 0, minWidth: 0 }} /> : null}
           <div style={{ alignItems: "center", display: "flex", gap: 10 }}>
             <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
-            {isLive ? (
+            {isLive && !viewer ? (
               <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
             ) : null}
           </div>
@@ -219,7 +222,7 @@ export function RunDetailView({ crumbs, hideHeader = false, runId, onBack, onOpe
           </button>
           <h2>{run.name}</h2>
           <span className="titlebar-meta">{formatDateTime(run.startedAt)}</span>
-          {isLive ? (
+          {isLive && !viewer ? (
             <div className="titlebar-actions">
               <button className="danger-button" onClick={() => setConfirmingCancel(true)}>{t("run.cancel")}</button>
             </div>

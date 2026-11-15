@@ -26,6 +26,7 @@ import { MfaPolicyAdmin } from "../mfa/MfaPolicyAdmin";
 import { MfaSection } from "../mfa/MfaSection";
 import { useAvatar } from "../profile/useAvatar";
 import { useCurrentUser, userDisplayName, userInitials } from "../profile/useCurrentUser";
+import { useIsDataViewer } from "../access/useDataViewer";
 
 type Section = "general" | "workspace" | "profile" | "security" | "notifications" | "appearance";
 
@@ -85,6 +86,8 @@ export function SettingsPage() {
   const profile = me.data?.data;
   const workspaceName = useWorkspaceName();
   const { avatar } = useAvatar();
+  // Data-viewer role: preferences stay, the wipe-everything panel does not.
+  const viewer = useIsDataViewer();
 
   const [section, setSection] = useState<Section>("general");
   const [nameDraft, setNameDraft] = useState(workspaceName || "TestPilot AI");
@@ -306,18 +309,22 @@ export function SettingsPage() {
             </div>
           ) : null}
 
-          <div className="panel danger-zone">
-            <div className="panel-head">
-              <div>
-                <h3 className="panel-title" style={{ color: "hsl(var(--destructive))" }}>{t("settings.danger.title")}</h3>
-                <p className="panel-desc">{t("settings.danger.desc")}</p>
+          {/* The wipe-everything panel is admin territory — the data-viewer
+              role gets its preferences without the danger zone. */}
+          {!viewer ? (
+            <div className="panel danger-zone">
+              <div className="panel-head">
+                <div>
+                  <h3 className="panel-title" style={{ color: "hsl(var(--destructive))" }}>{t("settings.danger.title")}</h3>
+                  <p className="panel-desc">{t("settings.danger.desc")}</p>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button className="danger-button" onClick={() => setConfirmingReset(true)}>{t("settings.danger.reset")}</button>
+                {resetDone ? <span className="alert alert-success" style={{ padding: "6px 10px" }}>{t("settings.danger.resetDone")}</span> : null}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button className="danger-button" onClick={() => setConfirmingReset(true)}>{t("settings.danger.reset")}</button>
-              {resetDone ? <span className="alert alert-success" style={{ padding: "6px 10px" }}>{t("settings.danger.resetDone")}</span> : null}
-            </div>
-          </div>
+          ) : null}
         </div>
       </div>
 

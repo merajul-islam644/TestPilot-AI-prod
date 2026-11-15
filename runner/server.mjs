@@ -393,6 +393,97 @@ app.get("/results", (_req, res) => {
   res.json({ ok: true, results: finishedRuns });
 });
 
+// ── Published batch queue ────────────────────────────────────────────────
+// The Overview "Branch & runs" batch is DRIVEN by the browser tab that
+// started it, but every browser on this machine should SEE the same queue.
+// The owning tab publishes each queue transition here plus a heartbeat
+// while its batch (or its settled results) is worth showing; other tabs
+// poll GET /batch and render the same cards. In-memory only: a runner
+// restart legitimately ends any published batch, and an owner that stops
+// answering (tab closed) times out below — viewers fall back to their own
+// adopted run records instead of a frozen queue.
+let publishedBatch = null;
+const BATCH_STALE_MS = 45_000;
+
+function batchIsStale() {
+  return publishedBatch !== null && Date.now() - publishedBatch.beat > BATCH_STALE_MS;
+}
+
+app.get("/batch", (_req, res) => {
+  if (batchIsStale()) publishedBatch = null;
+  res.json({ ok: true, batch: publishedBatch });
+});
+
+// The owning tab's full-state publish. Only known fields survive — the
+// runner owns `beat` and never trusts a client-supplied one.
+app.post("/batch", (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)
+      || !Array.isArray(body.projects)
+      || !body.states || typeof body.states !== "object") {
+    res.status(400).json({ ok: false, error: "batch needs projects[] and states{}" });
+    return;
+  }
+  const cardStates = ["queued", "running", "passed", "failed", "cancelled"];
+  const startedAt = typeof body.startedAt === "number" ? body.startedAt : Date.now();
+  // Skips survive republishes of the SAME batch (the owner doesn't know
+  // about viewer skips and must not erase them), but a NEW batch
+  // generation (different startedAt) starts with a clean slate — a stale
+  // skip from yesterday's queue must not swallow today's project.
+  const sameBatch = publishedBatch !== null && publishedBatch.startedAt === startedAt;
+  publishedBatch = {
+    startedAt,
+    queue: body.queue && typeof body.queue === "object"
+      ? { done: Number(body.queue.done) || 0, current: String(body.queue.current ?? ""), total: Number(body.queue.total) || 0 }
+      : null,
+    projects: body.projects.slice(0, 24).map((project) => ({
+      key: String(project?.key ?? ""),
+      label: String(project?.label ?? ""),
+      leadId: String(project?.leadId ?? "")
+    })).filter((project) => project.key !== ""),
+    states: Object.fromEntries(
+      Object.entries(body.states).slice(0, 24).map(([key, state]) => [key, {
+        state: cardStates.includes(state?.state) ? state.state : "queued",
+        ...(typeof state?.detail === "string" && state.detail ? { detail: state.detail.slice(0, 200) } : {}),
+        ...(typeof state?.at === "number" ? { at: state.at } : {})
+      }])
+    ),
+    skipped: sameBatch ? (publishedBatch.skipped ?? []) : [],
+    stopRequested: body.stopRequested === true,
+    beat: Date.now()
+  };
+  res.json({ ok: true });
+});
+
+// A viewer ✕-ed a queued card out of the queue — the owning loop reads
+// `skipped` between projects and drops the folder the way its own local
+// skip would.
+app.post("/batch/skip", (req, res) => {
+  if (publishedBatch && !batchIsStale()) {
+    const key = typeof req.body?.key === "string" ? req.body.key : "";
+    if (key) {
+      publishedBatch.skipped = Array.isArray(publishedBatch.skipped) ? publishedBatch.skipped : [];
+      if (!publishedBatch.skipped.includes(key) && publishedBatch.skipped.length < 24) {
+        publishedBatch.skipped.push(key);
+      }
+    }
+  }
+  res.json({ ok: true });
+});
+
+// A viewer's Stop: ask the owning loop to end the queue after the
+// in-flight project (it re-reads this between projects); the caller
+// cancels the live run itself through the normal /cancel endpoint.
+app.post("/batch/stop", (_req, res) => {
+  if (publishedBatch && !batchIsStale()) publishedBatch.stopRequested = true;
+  res.json({ ok: true });
+});
+
+app.post("/batch/clear", (_req, res) => {
+  publishedBatch = null;
+  res.json({ ok: true });
+});
+
 // The workspace's effective base URL — the E2E_BASE_URL its own .env files
 // set, exactly the value /run would use (env wins over the request's manual
 // value there). Only this ONE key leaves the runner; the rest of the .env

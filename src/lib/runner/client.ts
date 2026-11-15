@@ -132,6 +132,118 @@ export async function fetchRunnerEnvBaseURL(root: string): Promise<string | null
   }
 }
 
+// --- Published batch queue (shared across this machine's browsers) --------
+// The Overview batch owner publishes every queue transition to the runner;
+// other browsers poll it to render the same cards. Every call is
+// best-effort: an unreachable runner — or an older one without /batch —
+// simply resolves to null / a swallowed error, and the local view wins.
+
+export type RunnerBatchCardState = "queued" | "running" | "passed" | "failed" | "cancelled";
+export type RunnerBatchCard = { state: RunnerBatchCardState; detail?: string; at?: number };
+
+/** The queue document a batch-owning browser publishes to the runner. */
+export type RunnerBatch = {
+  /** When the batch started — cards only show finished runs from here on,
+   *  and a browser picks whichever batch (own vs published) is newer. */
+  startedAt: number;
+  /** Progress badge payload; null once the queue finished (settled cards
+   *  remain worth showing, so the document itself stays alive). */
+  queue: { done: number; current: string; total: number } | null;
+  /** The queued folders in dispatch order (key = normalized folder root —
+   *  the same string every browser's probe produces for the same disk). */
+  projects: { key: string; label: string; leadId: string }[];
+  /** Per-folder card state, keyed like projects[].key. */
+  states: Record<string, RunnerBatchCard>;
+  /** Set by POST /batch/stop — the owning loop ends the queue after the
+   *  in-flight project when it sees this. */
+  stopRequested?: boolean;
+  /** Folder roots a viewer ✕-ed out of the queue (POST /batch/skip) —
+   *  the owning loop drops them like its own local skips. */
+  skipped?: string[];
+};
+
+const BATCH_CARD_STATES: RunnerBatchCardState[] = ["queued", "running", "passed", "failed", "cancelled"];
+
+/** Loose validation of a runner's /batch answer — anything malformed
+ *  degrades to null, never throws into the caller's view. */
+function asRunnerBatch(body: unknown): RunnerBatch | null {
+  if (!body || typeof body !== "object") return null;
+  const raw = (body as { batch?: unknown }).batch;
+  if (!raw || typeof raw !== "object") return null;
+  const doc = raw as Record<string, unknown>;
+  if (typeof doc.startedAt !== "number" || !Array.isArray(doc.projects) || !doc.states || typeof doc.states !== "object") return null;
+  const states: Record<string, RunnerBatchCard> = {};
+  for (const [key, value] of Object.entries(doc.states as Record<string, unknown>)) {
+    const state = (value ?? {}) as { state?: unknown; detail?: unknown; at?: unknown };
+    if (typeof state.state !== "string" || !BATCH_CARD_STATES.includes(state.state as RunnerBatchCardState)) continue;
+    states[key] = {
+      state: state.state as RunnerBatchCardState,
+      ...(typeof state.detail === "string" && state.detail ? { detail: state.detail } : {}),
+      ...(typeof state.at === "number" ? { at: state.at } : {})
+    };
+  }
+  const queueRaw = doc.queue as Record<string, unknown> | null;
+  return {
+    startedAt: doc.startedAt,
+    queue: queueRaw && typeof queueRaw === "object"
+      ? { done: Number(queueRaw.done) || 0, current: String(queueRaw.current ?? ""), total: Number(queueRaw.total) || 0 }
+      : null,
+    projects: (doc.projects as unknown[]).map((entry) => {
+      const project = (entry ?? {}) as Record<string, unknown>;
+      return { key: String(project.key ?? ""), label: String(project.label ?? ""), leadId: String(project.leadId ?? "") };
+    }).filter((project) => project.key !== ""),
+    states,
+    stopRequested: doc.stopRequested === true,
+    skipped: Array.isArray(doc.skipped)
+      ? (doc.skipped as unknown[]).filter((key): key is string => typeof key === "string")
+      : []
+  };
+}
+
+/** The batch another browser published (null when none, stale or the
+ *  runner predates /batch). */
+export async function fetchRunnerBatch(): Promise<RunnerBatch | null> {
+  try {
+    const response = await fetch(`${RUNNER_URL}/batch`, { signal: AbortSignal.timeout(4_000) });
+    return asRunnerBatch(await response.json().catch(() => null));
+  } catch {
+    return null;
+  }
+}
+
+/** Owner-side publish of the whole queue document. */
+export async function putRunnerBatch(batch: RunnerBatch): Promise<void> {
+  const response = await fetch(`${RUNNER_URL}/batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(batch),
+    signal: AbortSignal.timeout(4_000)
+  });
+  if (!response.ok) throw new Error(`batch publish failed (${response.status})`);
+}
+
+/** Drop the published document (owner's batch content emptied). */
+export async function clearRunnerBatch(): Promise<void> {
+  await fetch(`${RUNNER_URL}/batch/clear`, { method: "POST", signal: AbortSignal.timeout(4_000) }).catch(() => undefined);
+}
+
+/** A viewer's stop request — the owning loop ends the queue after the
+ *  in-flight project when it re-reads the document. */
+export async function stopRunnerBatch(): Promise<void> {
+  await fetch(`${RUNNER_URL}/batch/stop`, { method: "POST", signal: AbortSignal.timeout(4_000) }).catch(() => undefined);
+}
+
+/** A viewer ✕-ed a queued folder out of the queue — the owning loop drops
+ *  it when it reaches that candidate. */
+export async function skipRunnerBatch(key: string): Promise<void> {
+  await fetch(`${RUNNER_URL}/batch/skip`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+    signal: AbortSignal.timeout(4_000)
+  }).catch(() => undefined);
+}
+
 /** The agent's pairing code — the terminal WebSocket refuses connections
  *  without it (WebSocket has no CORS, so the code is the door). null when
  *  the agent is unreachable or predates pairing (older frontend compat:
