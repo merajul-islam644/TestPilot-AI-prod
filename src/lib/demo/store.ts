@@ -304,6 +304,8 @@ function reviveRunFromResult(run: Run, result: RunnerFinishedRun): void {
 // skipped checks and zero gateway traffic.
 const REMOTE_ADOPTION_POLL_MS = 5_000;
 let remoteAdoptionTimer: number | null = null;
+/** Tick counter for the remote-viewer refresh inside adoptRemoteRun. */
+let remoteRefreshTicks = 0;
 
 function matchesLiveRunnerRun(run: Run, progress: RunnerRunProgress): boolean {
   return (run.status === "running" || run.status === "pending")
@@ -314,7 +316,29 @@ function matchesLiveRunnerRun(run: Run, progress: RunnerRunProgress): boolean {
 async function adoptRemoteRun(): Promise<void> {
   if (state.activeRunnerRun || state.status !== "ready") return;
   const busy = await runnerBusy();
-  if (!busy || state.activeRunnerRun) return; // idle, unreachable, or a local run started meanwhile
+  if (!busy || state.activeRunnerRun) {
+    // Locally idle — or the LOCAL runner is unreachable, which is the
+    // remote-viewer case: this machine has no runner, but a run may be
+    // executing on ANOTHER machine, whose browser patches progress into
+    // the gateway run record on every poll (patchRun → updateRunRecord).
+    // The gateway rows are that machine's live broadcast — read them at a
+    // matched cadence: every tick while a run is live, once per ~30 s
+    // otherwise (a newly started run still lands within 30 s, and the
+    // cadence speeds up on its own the moment it shows up).
+    if (busy !== null) return;
+    const newestLive = state.runs.some((run) => run.status === "running" || run.status === "pending");
+    remoteRefreshTicks += 1;
+    if (!newestLive && remoteRefreshTicks % 6 !== 1) return;
+    try {
+      const runs = await cloud.listRunRecords();
+      if (state.activeRunnerRun) return;
+      const projectIds = new Set(projects.map((project) => project.id));
+      emit({ ...state, runs: sortRuns(dedupeRuns(runs.filter((run) => projectIds.has(run.projectId)))) });
+    } catch (error) {
+      console.warn("[TestPilot] Remote runs refresh failed:", error);
+    }
+    return;
+  }
   const progress = await fetchRunProgress();
   if (!progress || state.activeRunnerRun) return;
   const localMatch = state.runs.find((run) => matchesLiveRunnerRun(run, progress));
