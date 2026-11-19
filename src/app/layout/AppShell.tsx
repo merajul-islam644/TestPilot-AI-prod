@@ -17,10 +17,8 @@ import { useT } from "../../lib/i18n/LocalizationProvider";
 import { bootstrapWorkspaceInfos, resetWorkspaceBootstrap } from "../../shared/workspaceBootstrap";
 import { PageSkeleton } from "../../shared/ui/PageSkeleton";
 import { RouteErrorBoundary } from "../../shared/ui/ErrorFallback";
-import { useWorkspaceName } from "../../shared/useWorkspaceName";
 import { useIsDataViewer } from "../../features/access/useDataViewer";
 import { APP_NAME } from "../appName";
-
 const COLLAPSED_KEY = "blocks-app:sidebar-collapsed";
 const MOBILE_QUERY = "(max-width: 880px)";
 /** Sidebar menus the data-viewer role never sees. */
@@ -49,7 +47,6 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newRunOpen, setNewRunOpen] = useState(false);
   const { t } = useT();
-  const workspaceName = useWorkspaceName();
   // The shell mounts before any route, so this is where the domain load is
   // guaranteed to start -- and where a failed load surfaces globally.
   const { status } = useDemoState();
@@ -130,11 +127,9 @@ export function AppShell({ activePath, children, onNavigate }: { activePath: str
             ) : (
               <a className="brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("/"); }}>
                 <span className="brand-mark"><FlaskConical size={16} /></span>
-                {/* APP_NAME, not t("app.name"): the brand is this repo's
-                    identity — the tenant-wide localization store carries
-                    another of the user's apps' name under that key, and
-                    cloud-merge rebranded this app seconds after load. */}
-                <span>{workspaceName || APP_NAME}</span>
+                {/* APP_NAME only: the brand is a build-time identity — no
+                    workspace rename system exists anymore. */}
+                <span>{APP_NAME}</span>
               </a>
             )}
             {/* Only shown while expanded -- once minimized the toggle lives in

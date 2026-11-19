@@ -270,6 +270,21 @@ section { margin: 0 auto; max-width: 1440px; width: 100%; }
 .suite-hero-name { font-size: 16px; font-weight: 600; margin: 0; }
 .panel-desc { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 2px 0 0; }
 .panel-foot { color: hsl(var(--muted-foreground)); display: flex; font-size: 12.5px; justify-content: space-between; margin-top: auto; padding-top: 12px; }
+/* Project Overview tab: identity hero strip + iconed metrics. (flex-direction
+   pinned to row — these sit on .panel, whose column direction stacks.) */
+.project-overview-hero { align-items: center; display: flex; flex-direction: row; flex-wrap: wrap; gap: 14px; }
+.project-overview-hero > div { min-width: 0; }
+.project-overview-hero h3 { font-size: 16px; margin: 0 0 2px; }
+.metric-head { align-items: center; color: hsl(var(--muted-foreground)); display: flex; font-size: 13px; gap: 8px; }
+.metric-head svg { background: hsl(var(--secondary)); border-radius: 6px; color: hsl(var(--primary)); padding: 4px; }
+.metric strong { font-size: 26px; }
+.project-jump { align-items: center; display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; }
+/* Live run banner (project page): visible on every tab while the project's
+   run executes, streaming the runner heartbeat. */
+.live-run-banner { align-items: center; background: hsl(var(--card)); border: 1px solid hsl(var(--primary) / 0.45); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: flex; flex-direction: row; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; padding: 10px 14px; }
+.live-run-banner > .live-run-spinner { color: hsl(var(--primary)); animation: tp-spin 0.9s linear infinite; }
+.live-run-banner strong { font-size: 13.5px; }
+.live-run-banner button { margin-left: auto; }
 .metric { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: grid; gap: 5px; padding: 16px; }
 .metric span, .muted { color: hsl(var(--muted-foreground)); font-size: 13px; }
 .muted { align-items: center; display: inline-flex; gap: 6px; }
@@ -406,25 +421,15 @@ a.table-link:hover { color: hsl(var(--primary)); }
 
 /* Settings: category rail + panel */
 /* --- Settings shell: identity rail + section cards ------------------- */
-.settings-shell { align-items: start; display: grid; gap: 24px; grid-template-columns: 236px minmax(0, 1fr); }
-.settings-rail { display: grid; gap: 10px; position: sticky; top: 16px; }
-.settings-identity { align-items: center; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: flex; gap: 10px; padding: 12px; }
-.settings-identity-copy { min-width: 0; }
-.settings-identity-copy strong { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-identity-mail { color: hsl(var(--muted-foreground)); display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-rail-nav { display: grid; gap: 2px; }
-.settings-rail-nav button { align-items: center; background: transparent; border: 0; border-radius: var(--radius); color: hsl(var(--muted-foreground)); display: flex; gap: 10px; padding: 8px 10px; text-align: left; transition: background-color 0.15s ease, color 0.15s ease; width: 100%; }
-.settings-rail-nav button:hover { background: hsl(var(--secondary)); color: hsl(var(--high-emphasis)); }
-.settings-rail-nav button.on { background: hsl(var(--primary) / 0.08); color: hsl(var(--primary)); }
-.settings-rail-text { min-width: 0; }
-.settings-rail-label { display: block; font-size: 13.5px; font-weight: 500; }
-.settings-rail-nav button.on .settings-rail-label { font-weight: 650; }
-.settings-rail-desc { color: hsl(var(--muted-foreground)); display: block; font-size: 11.5px; margin-top: 1px; }
+/* Settings: single-scroll stacked sections — each area is a headed card in
+   one column; no rail, no tabs. */
+.settings-stack { align-items: start; display: grid; gap: 22px; }
+.settings-section { display: grid; gap: 10px; }
+.settings-section-head { align-items: center; display: flex; gap: 11px; }
+.settings-section-icon { align-items: center; background: hsl(var(--secondary)); border-radius: 8px; color: hsl(var(--muted-foreground)); display: grid; flex-shrink: 0; height: 34px; place-items: center; width: 34px; }
+.settings-section-head h3 { font-size: 15px; margin: 0; }
+.settings-section-head p { color: hsl(var(--muted-foreground)); font-size: 12.5px; margin: 1px 0 0; }
 .settings-content { display: grid; gap: 16px; }
-.settings-head { align-items: center; display: flex; gap: 12px; }
-.settings-head-icon { align-items: center; background: hsl(var(--primary) / 0.1); border-radius: 10px; color: hsl(var(--primary)); display: inline-flex; flex: none; height: 34px; justify-content: center; width: 34px; }
-.settings-head h3 { font-size: 16px; margin: 0; }
-.settings-head p { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 2px 0 0; }
 .settings-card { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); box-shadow: var(--shadow-card); display: grid; overflow: hidden; }
 .settings-card-row { align-items: center; display: flex; gap: 16px; justify-content: space-between; padding: 14px 18px; }
 .settings-card-row + .settings-card-row { border-top: 1px solid hsl(var(--border)); }
@@ -432,6 +437,14 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .settings-card-copy strong { font-size: 13.5px; }
 .settings-card-copy p { color: hsl(var(--muted-foreground)); font-size: 12.5px; margin: 2px 0 0; }
 .settings-card-row-stack { align-items: stretch; flex-direction: column; }
+/* Free-form card content (the MFA blocks) reads as stacked rows of the SAME
+   card: full-bleed sections with row padding, hairline dividers between
+   them, and the nested policy panel flattened to a plain row block — no
+   border-inside-border. */
+.settings-card-body { display: grid; }
+.settings-card-body > * + * { border-top: 1px solid hsl(var(--border)); }
+.settings-card-body .settings-section { display: grid; gap: 10px; padding: 16px 18px; }
+.settings-card .mfa-policy-panel { background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 16px 18px; }
 .settings-control { flex: none; }
 .settings-control input { width: 240px; }
 .settings-card-footer { align-items: center; border-top: 1px solid hsl(var(--border)); display: flex; gap: 12px; justify-content: flex-end; padding: 12px 18px; }
@@ -457,7 +470,12 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .theme-half.is-dark-half .theme-mini-side { background: #2a2d37; }
 .theme-half.is-dark-half .theme-mini-line { background: #23262f; }
 .theme-half.is-dark-half .theme-mini-line.is-accent { background: #3b82f6; }
-.settings-section h4 { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+/* MfaSection renders its own sub-sections with an icon+title h4 — keep the
+   icon pinned beside the title (explicit flex row, so no loader context can
+   stack them). An empty actions row (policy blocks every method) must not
+   spend its margins on a hole in the card. */
+.settings-section h4 { align-items: center; display: flex; font-size: 14px; font-weight: 600; gap: 6px; margin-bottom: 2px; }
+.mfa-actions:empty { display: none; }
 .settings-section > p { color: hsl(var(--muted-foreground)); font-size: 13px; margin: 0 0 10px; }
 
 /* Switch */
@@ -579,8 +597,13 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .empty-icon { align-items: center; background: hsl(var(--secondary)); border-radius: 999px; color: hsl(var(--muted-foreground)); display: grid; height: 44px; place-items: center; width: 44px; }
 .error-state { color: hsl(var(--destructive)); border-style: solid; grid-template-columns: auto 1fr auto; justify-items: start; padding: 14px; text-align: left; }
 
+/* Boot screen (LoadingScreen): the sidebar's brand vocabulary + one shimmer
+   bar from the skeleton system below — no standalone spinner anywhere. */
 .loading-screen { align-items: center; display: flex; height: 100vh; justify-content: center; }
-.spinner { animation: tp-spin 0.7s linear infinite; border: 3px solid hsl(var(--border)); border-radius: 999px; border-top-color: hsl(var(--primary)); display: inline-block; height: 28px; width: 28px; }
+.loading-brand-block { align-items: center; display: grid; gap: 14px; justify-items: center; }
+.loading-brand-mark { height: 44px; width: 44px; }
+.loading-app-name { font-size: 18px; font-weight: 700; }
+.loading-line { width: 148px; }
 @keyframes tp-spin { to { transform: rotate(360deg); } }
 /* Route-matched skeletons (PageSkeleton) shown while the gateway load
    resolves -- they reuse the pages' layout classes for geometry, these rules
@@ -713,13 +736,7 @@ pre { background: hsl(var(--high-emphasis)); border-radius: var(--radius); color
   .toolbar-actions { justify-content: flex-end; }
   .pagination { align-items: stretch; flex-direction: column; }
   .pagination-controls { justify-content: space-between; }
-  /* Settings collapses to a single column: the rail becomes a horizontal
-     scroll strip (icons + labels only), controls take the full row width. */
-  .settings-shell { grid-template-columns: 1fr; }
-  .settings-rail { position: static; }
-  .settings-rail-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
-  .settings-rail-nav button { flex: none; width: auto; }
-  .settings-rail-desc { display: none; }
+  /* Settings is a single column already; controls take the full row width. */
   .settings-control, .settings-control input { width: 100%; }
   .settings-card-row { align-items: flex-start; flex-direction: column; gap: 10px; }
   .theme-previews { grid-template-columns: 1fr; }
@@ -765,14 +782,90 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
    blocks, each row carrying a status dot + duration. Used in the workbench
    Results tab, run detail and suite detail. */
 .case-tree { display: grid; gap: 16px; }
+.case-tree-toolbar { display: flex; gap: 8px; justify-content: flex-end; }
+.case-tree-toolbar .secondary-button { align-items: center; display: inline-flex; font-size: 12.5px; gap: 6px; padding: 6px 12px; }
+.case-file-chevron { margin-left: 2px; }
 /* Each spec reads as ONE unit: lifted card, an accent spine on the left,
    and a header strong enough to separate it from the rows below it. */
 .case-file { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-left: 3px solid hsl(var(--primary) / 0.55); border-radius: var(--radius-card); box-shadow: var(--shadow-card); overflow: hidden; }
-.case-file-head { align-items: center; background: hsl(var(--secondary) / 0.7); border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); display: flex; font-size: 13px; gap: 10px; padding: 10px 14px; }
+.case-file-head { align-items: center; background: hsl(var(--secondary) / 0.7); border: 0; border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--foreground)); cursor: pointer; display: flex; font-size: 13px; gap: 10px; padding: 10px 14px; text-align: left; width: 100%; }
+.case-file-head:hover { background: hsl(var(--secondary)); }
 .case-file-head > svg { color: hsl(var(--primary)); flex: none; }
+.case-file-head .case-file-chevron { color: hsl(var(--muted-foreground)); transition: transform 0.2s ease; }
+.case-file.collapsed .case-file-chevron { transform: rotate(-90deg); }
 .case-file-head .mono { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .case-file-counts { align-items: center; display: inline-flex; gap: 6px; margin-left: auto; white-space: nowrap; }
 .case-file-empty { margin: 0; padding: 10px 12px; }
+/* Inline-expandable run rows (Test runs): the stats columns live on flex
+   spans whose widths come from the shared column definitions; a clicked
+   run row folds open its case tree beneath itself. */
+/* Inline-expandable run rows (Test runs): each run is its own bordered
+   sub-card — same visual language as the spec-file cards beside it — and a
+   clicked run folds open its case tree beneath itself. */
+.runs-inline { display: grid; gap: 8px; padding: 10px 12px; }
+.runs-inline-head { border-bottom: 1px solid hsl(var(--border) / 0.6); color: hsl(var(--muted-foreground)); display: flex; font-size: 12px; font-weight: 600; gap: 8px; min-height: 28px; padding: 0 4px 4px; }
+.runs-inline-tail { flex: none; width: 23px; }
+.runs-inline-row { align-items: center; display: flex; gap: 8px; min-height: 42px; white-space: nowrap; width: 100%; }
+.runs-inline-head > span:last-child { margin-left: auto; }
+.cell-end { text-align: right; }
+.runs-inline-run { background: transparent; border: 0; color: inherit; cursor: pointer; font: inherit; padding: 8px 14px; text-align: left; transition: background-color 0.15s ease; }
+.runs-inline-run:hover { background: hsl(var(--secondary) / 0.5); }
+.runs-inline-item { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-left: 3px solid hsl(var(--primary) / 0.55); border-radius: var(--radius-card); box-shadow: var(--shadow-card); overflow: hidden; transition: background-color 0.15s ease; }
+.runs-inline-item:has(.runs-inline-run.open) { background: hsl(var(--secondary) / 0.35); }
+.runs-inline-run.open { background: hsl(var(--secondary) / 0.35); }
+.runs-inline-run .case-file-chevron { color: hsl(var(--muted-foreground)); flex: none; margin-left: auto; transition: transform 0.2s ease; }
+.runs-inline-run.open .case-file-chevron { transform: rotate(180deg); }
+.run-inline-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.28s ease; }
+.run-inline-body.open { grid-template-rows: 1fr; }
+.run-inline-body-inner { border-top: 1px solid hsl(var(--border)); min-height: 0; overflow: hidden; }
+.run-inline-body-inner .case-tree { padding: 10px 12px; }
+/* The "How to reproduce" block belongs to THIS row — an inset panel with
+   the same surfaces as the error block above it, never floating text. */
+.issue-repro { background: hsl(var(--secondary) / 0.45); border: 1px solid hsl(var(--border) / 0.6); border-radius: var(--radius); padding: 10px 14px; }
+.issue-repro strong { align-items: center; color: hsl(var(--high-emphasis)); display: flex; font-size: 12px; gap: 6px; letter-spacing: 0.02em; margin-bottom: 6px; }
+.issue-repro strong svg { color: hsl(var(--primary)); }
+.issue-repro ol { margin: 0; padding-left: 18px; }
+.issue-repro li { margin: 2px 0; }
+/* Issue rows inside a project fold: title + chips + chevron on the row, the
+   failure message / repro steps / assignee fold open beneath. */
+.issue-row { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: flex; font: inherit; gap: 10px; min-height: 40px; padding: 6px 14px; text-align: left; transition: background-color 0.15s ease; width: 100%; }
+.issue-row:hover { background: hsl(var(--secondary) / 0.5); }
+.issue-row + .issue-row { border-top: 1px solid hsl(var(--border) / 0.6); }
+.issue-list { display: grid; gap: 8px; padding: 10px 12px; }
+.issue-item { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-left: 3px solid hsl(var(--primary) / 0.55); border-radius: var(--radius); box-shadow: var(--shadow-card); overflow: hidden; transition: background-color 0.15s ease; }
+.issue-item:has(.issue-row.open) { background: hsl(var(--secondary) / 0.35); }
+.issue-row .case-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-row .case-file-chevron { color: hsl(var(--muted-foreground)); flex: none; margin-left: 10px; transition: transform 0.2s ease; }
+.issue-row.open .case-file-chevron { transform: rotate(180deg); }
+.issue-copy { color: hsl(var(--muted-foreground)); position: absolute; right: 10px; top: 10px; z-index: 1; }
+.issue-copy:hover { color: hsl(var(--primary)); }
+.issue-error-block { position: relative; }
+.issue-detail { border-top: 1px solid hsl(var(--border) / 0.6); display: grid; font-size: 13px; gap: 8px; padding: 12px 14px; }
+.issue-detail p { margin: 0; }
+.issue-detail ol { margin: 0; padding-left: 18px; }
+/* Collapse animation: the body folds via a 1fr ↔ 0fr grid-row transition —
+   smooth height animation without measuring content. */
+.case-file-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.28s ease; }
+.case-file.collapsed .case-file-body { grid-template-rows: 0fr; }
+.case-file-body-inner { min-height: 0; overflow: hidden; }
+/* A folded file whose tests are executing right now sweeps a band of light
+   across its head, left → right, until its result lands. */
+.case-file-head { position: relative; overflow: hidden; }
+.case-file.collapsed.is-running .case-file-head::after {
+  animation: case-sweep 1.7s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.22), transparent);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  transform: translateX(-110%);
+  width: 45%;
+}
+@keyframes case-sweep { to { transform: translateX(320%); } }
+@media (prefers-reduced-motion: reduce) {
+  .case-file.collapsed.is-running .case-file-head::after { animation: none; opacity: 0.35; }
+}
 .case-test { border-top: 1px solid hsl(var(--border)); }
 .case-test:first-of-type { border-top: 0; }
 .case-row { align-items: center; display: flex; gap: 10px; padding: 7px 12px; }
@@ -856,7 +949,6 @@ kbd { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); b
 .help-status-row { align-items: center; display: flex; gap: 12px; padding: 10px 0; }
 .help-status-row + .help-status-row { border-top: 1px solid hsl(var(--border)); }
 .help-status-row .muted { font-size: 13px; }
-.danger-zone { border-color: hsl(var(--destructive) / 0.35); }
 
 /* ============================================================
    Users admin (list toolbar extras, role picker, access dialog)

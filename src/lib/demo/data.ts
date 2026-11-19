@@ -1,4 +1,4 @@
-// Domain dataset for TestPilot AI. Blocks has no native test-management API,
+// Domain dataset for TestPilot. Blocks has no native test-management API,
 // so the domain records (projects, suites, runs, issues) are persisted in the
 // Blocks Data Gateway -- see ../blocks/data.ts and the schemas under
 // blocks/data/schemas. This module holds the app-facing types, the

@@ -200,41 +200,30 @@ function ReportsSkeleton() {
   );
 }
 
-/** Settings: the identity + section rail on the left, the active card on
- *  the right — the page's whole geometry, before any section renders. */
+/** Settings: the stacked single-scroll layout — a headed card per area
+ *  (security / notifications / appearance). */
 function SettingsSkeleton() {
   return (
     <div className="page-skeleton">
-      <div className="skel-row" style={{ alignItems: "stretch" }}>
-        <div className="panel skel-card" style={{ flex: "0 0 260px", margin: 0 }}>
+      {[0, 1, 2].map((i) => (
+        <div className="settings-section" key={i}>
           <div className="skel-row">
-            <span className="skeleton skeleton-avatar-hero" style={{ height: 36, width: 36 }} />
+            <span className="skeleton skel-icon" style={{ height: 34, width: 34 }} />
             <div style={{ display: "grid", gap: 6 }}>
-              <Line tall width="120px" />
-              <Line width="150px" />
+              <Line tall width="124px" />
+              <Line width="186px" />
             </div>
           </div>
-          {[64, 52, 58, 46, 60, 50].map((width, i) => (
-            <div className="skel-row" key={i} style={{ marginTop: i === 0 ? 14 : 8 }}>
-              <span className="skeleton skel-icon" />
-              <Line width={`${width}%`} />
-            </div>
-          ))}
+          <Card>
+            {[0, 1].map((j) => (
+              <div className="skel-row skel-row-between" key={j}>
+                <Line width={`${40 - j * 10}%`} />
+                <span className="skeleton skel-btn" />
+              </div>
+            ))}
+          </Card>
         </div>
-        <div className="panel skel-card" style={{ flex: 1, margin: 0 }}>
-          <HeadRow />
-          {[0, 1, 2].map((i) => (
-            <div className="skel-row skel-row-between" key={i} style={{ marginTop: 10 }}>
-              <Line width="34%" />
-              <Line width={`${52 - i * 10}%`} />
-            </div>
-          ))}
-          <div className="skel-row skel-row-between" style={{ marginTop: 14 }}>
-            <span className="skeleton skel-chip" />
-            <span className="skeleton skel-btn" />
-          </div>
-        </div>
-      </div>
+      ))}
     </div>
   );
 }

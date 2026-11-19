@@ -3,15 +3,14 @@
 // pulls in app/router/routes, which imports the project page back and
 // makes the module graph circular (vite then full-reloads on every HMR
 // update inside the cycle).
-import { useMemo } from "react";
-import { ArrowLeft, FileCode2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ArrowLeft, ChevronDown, FileCode2 } from "lucide-react";
 import { PLAYWRIGHT_SUITE_ID_PREFIX, derivedSuiteForProject, projectById, runTrigger, suiteById } from "../../lib/demo/data";
 import { useDemoState } from "../../lib/demo/store";
 import { formatDate, formatRelative } from "../../lib/format";
 import type { SpecTestBlock } from "../../lib/workspace/specBlocks";
 import { useSpecBlocks } from "../../lib/workspace/useSpecBlocks";
 import { useT } from "../../lib/i18n/LocalizationProvider";
-import { Breadcrumb } from "../../shared/ui/Breadcrumb";
 import { CaseTree } from "../../shared/ui/CaseTree";
 import { DataTable } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
@@ -103,22 +102,11 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
 
   return (
     <section>
-      {contentOnly ? (
-        /* Content-only mode presents the page as the PROJECT: the trail is
-           Test suites › <project>, its name is the last crumb — so no back
-           arrow or repeated heading is needed. The first crumb walks back
-           to the global suites list in one click. */
-        <Breadcrumb
-          items={[
-            { label: t("nav.suites"), onClick: onBack },
-            { label: project?.name ?? suite.name }
-          ]}
-        />
-      ) : (
-        /* Compact title bar: back arrow, suite name and its description on
-            ONE row — same pattern as the project page's titlebar. The
-            project page's drill-down keeps it: its back button IS the way
-            out of the in-context view. */
+      {/* Content-only mode (Test suites page) starts straight at the status
+          chips — the list page's project row already names the project, so
+          the breadcrumb added nothing. The project page's drill-down keeps
+          its titlebar: its back button IS the way out of that view. */}
+      {!contentOnly ? (
         <div className="titlebar">
           <button aria-label={t("common.back")} className="tertiary-button" onClick={onBack} title={t("common.back")} type="button">
             <ArrowLeft size={16} />
@@ -126,7 +114,7 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
           <h2>{suite.name}</h2>
           <span className="titlebar-meta">{suite.description}</span>
         </div>
-      )}
+      ) : null}
 
       <div className="chips" style={{ marginBottom: 16 }}>
         <SuiteStatusBadge
@@ -188,44 +176,94 @@ export function SuiteDetailView({ contentOnly = false, suiteId, onBack, onOpenRu
   );
 }
 
-/** The spec parse presented PROJECT-based, as the Test suites page asks:
- *  ONE group headed by the project's name (plus its total test count),
- *  with every test of every spec flattened beneath it — no spec file
- *  paths anywhere. Steps keep their indented titles, and describe/step
- *  chains stay on hover. No status icons, durations or pass/fail of any
- *  kind — that is CaseTree's job on the run views. */
-function PlainSpecTree({ blocks, projectName }: { blocks: { file: string; tests: SpecTestBlock[] }[]; projectName: string }) {
+/** The spec parse presented PROJECT-based — used by the project drill-down.
+ *  Level 1 — one project group (name + total test count); level 2 — EVERY
+ *  spec file as its own collapsible row (name + per-file count); level 3 —
+ *  that file's tests and steps. Project starts MINIMIZED, spec files too,
+ *  and one file unfolds at a time (accordion) — the same chevron + fold
+ *  animation as the run views, but no light sweep, nothing here ever
+ *  "runs". No status icons, durations or pass/fail of any kind — that is
+ *  CaseTree's job on the run views. */
+export function PlainSpecTree({ blocks, projectName }: { blocks: { file: string; tests: SpecTestBlock[] }[]; projectName: string }) {
   const { t } = useT();
+  const [projectExpanded, setProjectExpanded] = useState(false);
   const tests = blocks.flatMap((group) => group.tests);
   return (
     <div className="case-tree">
-      <div className="case-file">
-        <div className="case-file-head">
-          <FileCode2 size={13} aria-hidden />
+      <div className={`case-file${projectExpanded ? "" : " collapsed"}`}>
+        <button
+          aria-expanded={projectExpanded}
+          className="case-file-head"
+          onClick={() => setProjectExpanded((value) => !value)}
+          type="button"
+        >
+          <FileCode2 className="case-file-ico" size={13} aria-hidden />
           <span>{projectName}</span>
-          <span className="muted">{`${tests.length} ${t("common.tests")}`}</span>
-        </div>
-        {tests.map((test, index) => (
-          <div className="case-test" key={`test-${index}`}>
-            <div
-              className="case-row"
-              title={test.describeChain.length > 0 ? `${test.describeChain.join(" › ")} › ${test.title}` : test.title}
-            >
-              <span className="case-title">{test.title}</span>
+          <span className="muted" style={{ marginLeft: "auto" }}>{`${tests.length} ${t("common.tests")}`}</span>
+          <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+        </button>
+        <div className="case-file-body">
+          <div className="case-file-body-inner">
+            <div style={{ padding: "10px 12px" }}>
+              <PlainSpecFiles blocks={blocks} />
             </div>
-            {test.steps.map((step, stepIndex) => (
-              <div
-                className="case-row case-step"
-                key={`test-${index}:${stepIndex}`}
-                style={{ paddingLeft: 26 + step.depth * 16 }}
-                title={step.title}
-              >
-                <span className="case-title">{step.title}</span>
-              </div>
-            ))}
           </div>
-        ))}
+        </div>
       </div>
+    </div>
+  );
+}
+
+/** JUST the spec-file accordion rows (no project wrapper) — the level the
+ *  Test suites page nests inside its own project row, so a head never
+ *  duplicates the row it sits in. One file unfolded at a time. */
+export function PlainSpecFiles({ blocks }: { blocks: { file: string; tests: SpecTestBlock[] }[] }) {
+  const { t } = useT();
+  const [openFile, setOpenFile] = useState<string | null>(null);
+  return (
+    <div className="case-tree" style={{ gap: 10 }}>
+      {blocks.map((group) => {
+        const fileOpen = openFile === group.file;
+        return (
+          <div className={`case-file${fileOpen ? "" : " collapsed"}`} key={group.file}>
+            <button
+              aria-expanded={fileOpen}
+              className="case-file-head"
+              onClick={() => setOpenFile(fileOpen ? null : group.file)}
+              type="button"
+            >
+              <FileCode2 className="case-file-ico" size={13} aria-hidden />
+              <span className="mono">{group.file}</span>
+              <span className="muted" style={{ marginLeft: "auto" }}>{`${group.tests.length} ${t("common.tests")}`}</span>
+              <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+            </button>
+            <div className="case-file-body">
+              <div className="case-file-body-inner">
+                {group.tests.map((test, index) => (
+                  <div className="case-test" key={`test-${index}`}>
+                    <div
+                      className="case-row"
+                      title={test.describeChain.length > 0 ? `${test.describeChain.join(" › ")} › ${test.title}` : test.title}
+                    >
+                      <span className="case-title">{test.title}</span>
+                    </div>
+                    {test.steps.map((step, stepIndex) => (
+                      <div
+                        className="case-row case-step"
+                        key={`test-${index}:${stepIndex}`}
+                        style={{ paddingLeft: 26 + step.depth * 16 }}
+                        title={step.title}
+                      >
+                        <span className="case-title">{step.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

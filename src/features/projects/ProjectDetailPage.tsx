@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Play, Search } from "lucide-react";
+import { ArrowLeft, Bug, ChevronDown, CircleCheck, CircleX, Copy, FlaskConical, Gauge, ListChecks, ListOrdered, LoaderCircle, Play, Search } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
 import { useIsDataViewer } from "../access/useDataViewer";
 import { derivedSuiteForProject, projectById } from "../../lib/demo/data";
 import type { RunStatus } from "../../lib/demo/data";
-import { cancelRun, runPlaywrightTests, useActiveRunnerRun, useDemoState } from "../../lib/demo/store";
-import { RUNNER_MAX_FILES } from "../../lib/runner/client";
+import { cancelRun, runPlaywrightTests, runnerProgressSnapshot, subscribeRunnerProgress, useActiveRunnerRun, useDemoState } from "../../lib/demo/store";
+import { formatCompact, formatNumber } from "../../lib/format";
+import { RUNNER_MAX_FILES, type RunnerRunProgress } from "../../lib/runner/client";
 import { localFolder } from "../../lib/workspace/localFolder";
 import type { FolderNode } from "../../lib/workspace/localFolder";
 import { collectImportedHelpers, isRunnableSpecPath } from "../../lib/workspace/importFiles";
@@ -19,12 +20,13 @@ import { formatDate, formatPercent, formatRelative } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { ChartCard, ChartLegend } from "../../shared/charts/ChartCard";
 import { StackedColumns } from "../../shared/charts/StackedColumns";
-import { DataTable } from "../../shared/ui/DataTable";
+import { DataTable, type Column } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { Breadcrumb } from "../../shared/ui/Breadcrumb";
-import { CaseTree } from "../../shared/ui/CaseTree";
+import { CaseError } from "../../shared/ui/CaseTree";
+import { KpiCard } from "../../shared/ui/KpiCard";
 import { Select } from "../../shared/ui/select";
-import { StatusBadge, SuiteStatusBadge } from "../../shared/ui/StatusBadge";
+import { IssueStatusBadge, StatusBadge, SeverityBadge, SuiteStatusBadge } from "../../shared/ui/StatusBadge";
 import { Tabs } from "../../shared/ui/Tabs";
 import { ProjectTestsTab } from "./ProjectTestsTab";
 // The detail VIEWS (not the route pages) are imported here on purpose:
@@ -33,10 +35,11 @@ import { ProjectTestsTab } from "./ProjectTestsTab";
 // vite would full-reload the page on every HMR update inside the cycle
 // (which used to kill an in-flight run dispatch).
 import { IssueDetailView } from "../issues/IssueDetailView";
-import { useIssueColumns } from "../issues/issueColumns";
+import { ISSUE_STATUS_KEYS, SEVERITY_KEYS, useIssueColumns } from "../issues/issueColumns";
 import { RunDetailView } from "../runs/RunDetailView";
-import { RUN_STATUS_KEYS, useRunColumns } from "../runs/runColumns";
-import { SuiteDetailView } from "../suites/SuiteDetailView";
+import { RUN_STATUS_KEYS, useRunColumns, useRunStatsColumns } from "../runs/runColumns";
+import { RunInlineRow } from "../runs/RunInlineRow";
+import { PlainSpecFiles, SuiteDetailView } from "../suites/SuiteDetailView";
 import { ProjectIcon } from "./ProjectIcon";
 
 type Tab = "summary" | "runs" | "suites" | "tests" | "issues" | "activity";
@@ -80,7 +83,7 @@ function initialDrill(): Drill | null {
 
 export function ProjectDetailPage() {
   const { params, navigate } = useRoute();
-  const { runs, issues } = useDemoState();
+  const { runs, issues, caseResults } = useDemoState();
   const { t } = useT();
   const [tab, setTabState] = useState<Tab>(initialTab);
   // The data-viewer role has no editor: a viewer landing on ?tab=tests (or
@@ -117,6 +120,12 @@ export function ProjectDetailPage() {
     && workspaceInfo.specPaths.length > 0
   );
   const runInFlight = activeRunnerRun?.projectId === params.projectId;
+  // Live banner: visible on EVERY tab while this project's run executes —
+  // the heartbeat (passed/failed/progress) streams from the runner's ~2s
+  // /status poll.
+  const projectLive = runInFlight ? activeRunnerRun : null;
+  const [liveProgress, setLiveProgress] = useState(runnerProgressSnapshot());
+  useEffect(() => subscribeRunnerProgress((progress: RunnerRunProgress) => setLiveProgress(progress)), []);
 
   // Static spec parse of the open runner-mode folder — this is what the
   // suites tab previews (every block and step, before anything runs) and
@@ -182,6 +191,27 @@ export function ProjectDetailPage() {
     ? { omitProject: true }
     : { omitProject: true, onCancel: (run) => cancelRun(run.id) });
   const issueColumns = useIssueColumns((issue) => openDrill("issue", issue.id), { omitProject: true });
+  // The runs tab's fold rows use the FULL stats column set — the exact
+  // columns the Test runs board's inner rows use — armed with the stop
+  // button on live rows for non-viewers.
+  const inlineRunColumns = useRunStatsColumns(viewer ? undefined : { onCancel: (run) => cancelRun(run.id) });
+  // Fold state: one run unfolded at a time (runs tab); the issues tab groups
+  // by run, one run group at a time, each issue unfolding its details.
+  const [openRun, setOpenRun] = useState<string | null>(null);
+  const [openRunGroup, setOpenRunGroup] = useState<string | null>(null);
+  const [openIssue, setOpenIssue] = useState<string | null>(null);
+  // ...with the Project column replaced by WHEN the run happened (this page
+  // already names the project), Date and the tail dropped — time leads.
+  const inlineColumns: Column<(typeof runs)[number]>[] = useMemo(() => {
+    const [, status, total, passed, failed, duration, , rate] = inlineRunColumns;
+    const started: Column<(typeof runs)[number]> = {
+      key: "started",
+      header: t("runs.started"),
+      render: (run) => <span className="table-link">{formatRelative(run.startedAt)}</span>,
+      width: "18%"
+    };
+    return [started, status, total, passed, failed, duration, rate].filter((col): col is NonNullable<typeof col> => Boolean(col));
+  }, [inlineRunColumns, runs, t]);
 
   const project = projectById(params.projectId ?? "");
   const projectRuns = useMemo(() => runs.filter((run) => run.projectId === params.projectId), [params.projectId, runs]);
@@ -243,6 +273,7 @@ export function ProjectDetailPage() {
 
   const last30 = projectRuns.filter((run) => run.startedAt >= Date.now() - 30 * DAY_MS);
   const totalTests = last30.reduce((sum, run) => sum + run.total, 0);
+  const failedSum = last30.reduce((sum, run) => sum + run.failed, 0);
   const passedTests = last30.reduce((sum, run) => sum + run.passed, 0);
   const failedTests = last30.reduce((sum, run) => sum + run.failed, 0);
   const successRate = passedTests + failedTests > 0 ? (passedTests / (passedTests + failedTests)) * 100 : 0;
@@ -251,7 +282,9 @@ export function ProjectDetailPage() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: "tests", label: t("projects.tabTests") },
-    { id: "summary", label: t("projects.tabSummary") },
+    // Hardcoded label: the tenant localization store can override the
+    // dictionary key — this tab's name is identity, not translatable copy.
+    { id: "summary", label: "Overview" },
     { id: "suites", label: t("projects.tabSuites") },
     { id: "runs", label: t("projects.tabRuns") },
     { id: "issues", label: t("projects.tabIssues") },
@@ -427,80 +460,115 @@ export function ProjectDetailPage() {
             tabs={viewer ? tabs.filter((entry) => entry.id !== "tests") : tabs}
           />
 
+          {/* Live run banner: pinned above every tab while THIS project's run
+              executes — streams the heartbeat (passed/failed/progress). */}
+          {projectLive ? (
+            <div className="panel live-run-banner">
+              <LoaderCircle className="live-run-spinner" size={15} aria-hidden />
+              <strong>{t("status.running")}</strong>
+              <span className="muted">
+                {liveProgress
+                  ? `${liveProgress.passed}/${liveProgress.total} · ${liveProgress.total > 0 ? Math.round((liveProgress.completed / liveProgress.total) * 100) : 0}%`
+                  : "…"}
+              </span>
+              <button className="secondary-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
+            </div>
+          ) : null}
+
           {tab === "summary" ? (
-        <>
-          <div className="grid">
-            <div className="metric"><span>{t("projects.successRate")}</span><strong className="num">{formatPercent(successRate)}</strong></div>
-            <div className="metric"><span>{t("projects.tabRuns")}</span><strong className="num">{last30.length}</strong></div>
-            <div className="metric"><span>{t("common.tests")}</span><strong className="num">{totalTests}</strong></div>
-            <div className="metric"><span>{t("projects.openIssues")}</span><strong className="num" style={openIssues > 0 ? { color: "hsl(var(--destructive))" } : undefined}>{openIssues}</strong></div>
+        <div className="stack">
+          {/* Project hero: identity strip — icon, name, description, and the
+              scope chips on the right. */}
+          <div className="panel project-overview-hero">
+            <ProjectIcon icon={project.icon} />
+            <div style={{ minWidth: 0 }}>
+              <h3 style={{ fontSize: 16, margin: "0 0 2px" }}>{project.name}</h3>
+              <p className="muted" style={{ margin: 0 }}>{project.description}</p>
+            </div>
+            <div className="chips" style={{ marginLeft: "auto" }}>
+              <span className="chip">{`${derivedSuite ? 1 : 0} ${t("projects.suitesLabel")}`}</span>
+              <span className="chip">{`${t("projects.created")}: ${formatDate(project.createdAt)}`}</span>
+            </div>
           </div>
+
+          {/* The same KPI cards + activity chart the global Overview uses —
+              scoped to this project's runs. */}
+          {/* KPI values read from the LATEST run — not accumulated across
+              runs: 10 tests run 3 times shows 10, not 30. The chart below
+              carries the per-run history. */}
+          <div className="kpis">
+            <KpiCard icon={<ListChecks size={15} />} label={t("overview.kpi.total")} value={latestRun ? formatCompact(latestRun.total) : "0"} />
+            <KpiCard icon={<CircleCheck size={15} />} label={t("overview.kpi.passed")} tone="ok" value={latestRun ? formatCompact(latestRun.passed) : "0"} />
+            <KpiCard icon={<CircleX size={15} />} label={t("overview.kpi.failed")} tone="bad" value={latestRun ? formatCompact(latestRun.failed) : "0"} />
+            <KpiCard icon={<Gauge size={15} />} label={t("overview.kpi.success")} value={formatPercent(successRate)} />
+          </div>
+
+          {/* Per-RUN columns: every run of the last 30 days is one stacked
+              column (passed = base, failed = top), labelled with when it ran
+              — a bar IS a run, nothing to decode. */}
           <div className="grid-2">
-            <div className="panel">
-              <div className="panel-head">
-                <h3 className="panel-title">{t("projects.about")}</h3>
-              </div>
-              <div style={{ display: "grid", gap: 12 }}>
-                <div className="chips">
-                  <ProjectIcon icon={project.icon} />
-                  <span className="chip">{`${derivedSuite ? 1 : 0} ${t("projects.suitesLabel")}`}</span>
-                  <span className="chip">{`${t("projects.created")}: ${formatDate(project.createdAt)}`}</span>
-                </div>
-                <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>{project.description}</p>
-              </div>
-            </div>
-            <div className="panel">
-              <div className="panel-head">
-                <h3 className="panel-title">{t("projects.latestRun")}</h3>
-              </div>
-              {latestRun ? (
-                <button className="health-row" onClick={() => openDrill("run", latestRun.id)}>
-                  <span className="table-link" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{latestRun.name}</span>
-                  <StatusBadge tone={latestRun.status === "passed" ? "passed" : "failed"}>
-                    {t(latestRun.status === "passed" ? "status.passed" : "status.failed")}
-                  </StatusBadge>
-                  <span className="muted">{formatRelative(latestRun.startedAt)}</span>
-                </button>
-              ) : (
-                <p className="muted">{t("projects.emptyRuns")}</p>
+            <ChartCard
+              description="One column per run — passed give the scale, failed stacks on top."
+              footer={(
+                <>
+                  <span>{`${formatNumber(totalTests)} ${t("common.tests")}`}</span>
+                  <span>{`${formatNumber(failedSum)} ${t("common.failed")}`}</span>
+                </>
               )}
-            </div>
-          </div>
-          {/* Stacked full-width panels flow inside one gap — .panel has no
-              margin of its own, so siblings would otherwise touch. */}
-          <div className="stack">
-          <div className="panel">
-            <div className="panel-head">
-              <h3 className="panel-title">{t("projects.workspace.title")}</h3>
-            </div>
-            {workspace ? (
-              <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between" }}>
-                <div style={{ minWidth: 0 }}>
-                  <strong>{workspace.root.split(/[\\/]/).pop() || workspace.root}</strong>
-                  <div className="muted" style={{ fontSize: 12.5, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace.root}</div>
+              legend={<ChartLegend items={[{ color: "var(--chart-failed)", label: t("common.failed") }, { color: "var(--chart-context)", label: t("common.passed") }]} />}
+              table={{
+                head: [t("common.date"), t("common.passed"), t("common.failed")],
+                rows: [...last30].sort((a, b) => b.startedAt - a.startedAt).map((run) => [formatRelative(run.startedAt), formatNumber(run.passed), formatNumber(run.failed)])
+              }}
+              title={t("overview.activity.title")}
+            >
+              {last30.length > 0 ? (
+                <StackedColumns
+                  ariaLabel={t("overview.activity.title")}
+                  baseLabel={t("common.passed")}
+                  data={[...last30].sort((a, b) => a.startedAt - b.startedAt).map((run) => ({
+                    base: run.passed,
+                    label: formatRelative(run.startedAt),
+                    top: run.failed
+                  }))}
+                  topLabel={t("common.failed")}
+                />
+              ) : (
+                <EmptyState
+                  description={t("overview.activity.emptyDesc")}
+                  icon={<ListChecks size={20} />}
+                  title={t("overview.activity.emptyTitle")}
+                />
+              )}
+            </ChartCard>
+
+            <div className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3 className="panel-title">{t("overview.health.title")}</h3>
                 </div>
-                <div style={{ alignItems: "center", display: "flex", gap: 8 }}>
-                  <span className="chip">{workspace.filesCount} {t("projects.workspace.filesLabel")}</span>
-                  <span className="chip">{workspace.specPaths.length} {t("suite.specCount")}</span>
-                  <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
-                </div>
+                <button className="link-button" onClick={() => setTab("issues")}>{t("common.viewAll")}</button>
               </div>
-            ) : (
-              <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between" }}>
-                <p className="muted" style={{ margin: 0 }}>{t("projects.workspace.none")}</p>
-                <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
+              <div className="health-list">
+                <button className="health-row" onClick={() => openDrill("run", latestRun?.id ?? "")}>
+                  <span className="table-link" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{latestRun?.name ?? "—"}</span>
+                  {latestRun ? (
+                    <>
+                      <StatusBadge tone={latestRun.status === "passed" ? "passed" : "failed"}>
+                        {t(latestRun.status === "passed" ? "status.passed" : "status.failed")}
+                      </StatusBadge>
+                      <span className="muted">{formatRelative(latestRun.startedAt)}</span>
+                    </>
+                  ) : null}
+                </button>
+                <button className="health-row" onClick={() => setTab("issues")}>
+                  <span className="table-link" style={{ flex: 1 }}>{t("projects.openIssues")}</span>
+                  <strong className="num" style={openIssues > 0 ? { color: "hsl(var(--destructive))" } : undefined}>{openIssues}</strong>
+                </button>
               </div>
-            )}
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h3 className="panel-title">{t("projects.tabRuns")}</h3>
-              <button className="link-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
             </div>
-            <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 6)} />
           </div>
           </div>
-        </>
       ) : null}
 
       {tab === "runs" ? (
@@ -524,7 +592,41 @@ export function ProjectDetailPage() {
               </div>
             </div>
             {filteredRuns.length > 0 ? (
-              <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={filteredRuns} />
+              <div>
+              {/* Run rows fold INLINE — clicking a run opens its case tree
+                  right beneath the row, exactly like the Test runs board's
+                  inner rows; no drill-down needed for a quick look. The
+                  LIVE run streams its spec tree in the SAME fold (shared
+                  RunInlineRow with the Test runs board), so there is no
+                  separate live panel above the table anymore. */}
+              <div className="runs-inline">
+                <div className="runs-inline-row runs-inline-head">
+                  {inlineColumns.map((col) => (
+                    <span
+                      className={`${col.align === "end" ? "cell-end" : ""}${col.className ? ` ${col.className}` : ""}`}
+                      key={col.key}
+                      style={col.width ? { flex: "none", width: col.width } : undefined}
+                    >
+                      {col.header}
+                    </span>
+                  ))}
+                  <span aria-hidden className="runs-inline-tail" />
+                </div>
+                {filteredRuns.map((run) => {
+                  const open = openRun === run.id;
+                  return (
+                    <RunInlineRow
+                      cases={caseResults.filter((entry) => entry.runId === run.id)}
+                      inlineColumns={inlineColumns}
+                      key={run.id}
+                      onToggle={() => setOpenRun(open ? null : run.id)}
+                      open={open}
+                      run={run}
+                    />
+                  );
+                })}
+              </div>
+              </div>
             ) : (
               <EmptyState description={t("common.notFound")} title={t("runs.empty")} />
             )}
@@ -541,42 +643,6 @@ export function ProjectDetailPage() {
       {tab === "suites" ? (
         derivedSuite ? (
           <>
-            {/* Suite hero + recent runs flow inside one gap (see .stack). */}
-            <div className="stack">
-            {/* Suite hero: what the derived suite IS (specs + folder) and its
-                two actions. Run suite reuses the tab-level direct dispatch,
-                so it obeys the same disabled rules as Run Tests. */}
-            <div className="panel">
-              <div className="suite-hero">
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: 10 }}>
-                    <h3 className="suite-hero-name">{derivedSuite.name}</h3>
-                    <SuiteStatusBadge label={t("suite.active")} status={derivedSuite.status} />
-                  </div>
-                  <p className="muted" style={{ margin: "4px 0 10px" }}>{derivedSuite.description}</p>
-                  <div className="chips">
-                    <span className="chip">{t("common.owner")}: {derivedSuite.owner}</span>
-                    <span className="chip">{t("suite.lastUpdated")}: {formatRelative(derivedSuite.lastUpdatedAt)}</span>
-                  </div>
-                </div>
-                <div style={{ alignItems: "center", display: "flex", flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
-                  {viewer ? null : (
-                    <>
-                      <button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>
-                      <button
-                        className="primary-button"
-                        disabled={!canRunDirect || startingRun || runInFlight}
-                        onClick={() => void runProjectSpecs()}
-                        title={!canRunDirect ? (savedRoot?.mode === "fsa" ? t("newRun.fsaHint") : t("projects.runDirectHint")) : undefined}
-                        type="button"
-                      >
-                        <Play size={16} /> {startingRun ? t("newRun.starting") : t("suite.runNow")}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
             {/* The folder's whole suite as a tree — every block and its steps,
                 visible the moment the folder opens (nothing has run yet, so
                 every dot shows Not run). The run tree on the runs tab fills
@@ -589,23 +655,12 @@ export function ProjectDetailPage() {
                     {blocks.reduce((sum, group) => sum + group.tests.length, 0)} {t("common.tests")}
                   </span>
                 </div>
-                <CaseTree cases={[]} files={blocks} />
+                {/* The suites list's own fold tree: spec-file rows with per-
+                    file counts, tests and steps beneath — no pass/fail
+                    anywhere (this tab shows what the suite CONTAINS). */}
+                <PlainSpecFiles blocks={blocks} />
               </div>
             ) : null}
-            {/* This project's runs ARE this suite's runs (one derived suite
-                per project), so recent runs = the project's latest five. */}
-            <div className="panel">
-              <div className="panel-head">
-                <h3 className="panel-title">{t("suite.recentRuns")}</h3>
-                <button className="link-button" onClick={() => setTab("runs")}>{t("common.viewAll")}</button>
-              </div>
-              {projectRuns.length > 0 ? (
-                <DataTable columns={runColumns} fixed onRowClick={(run) => openDrill("run", run.id)} rows={projectRuns.slice(0, 5)} />
-              ) : (
-                <p className="muted">{t("suite.noRuns")}</p>
-              )}
-            </div>
-            </div>
           </>
         ) : (
           <EmptyState
@@ -620,7 +675,103 @@ export function ProjectDetailPage() {
 
       {tab === "issues" ? (
         projectIssues.length > 0 ? (
-          <DataTable columns={issueColumns} onRowClick={(issue) => openDrill("issue", issue.id)} rows={projectIssues} />
+          /* Issues grouped BY RUN — the same fold rows as the global Issues
+              page, scoped to this project: each run names itself (when it
+              ran), its issues fold out beneath, each issue folding again
+              into message / repro / assignee. */
+          <div className="case-tree" style={{ gap: 14, padding: "4px 2px 12px" }}>
+            {(() => {
+              const runGroups = new Map<string, { run: typeof runs[number] | undefined; issues: typeof projectIssues }>();
+              for (const issue of projectIssues) {
+                const key = issue.runId ?? "";
+                const group = runGroups.get(key) ?? { run: runs.find((entry) => entry.id === key), issues: [] as typeof projectIssues };
+                group.issues.push(issue);
+                runGroups.set(key, group);
+              }
+              const groups = [...runGroups.entries()]
+                .map(([key, group]) => ({ key: key || "unattributed", run: group.run, issues: group.issues }))
+                .sort((a, b) => (b.run?.startedAt ?? 0) - (a.run?.startedAt ?? 0));
+              return groups.map(({ key, run, issues: groupIssues }) => {
+                const groupOpen = openRunGroup === key;
+                return (
+                  <div className={`case-file${groupOpen ? "" : " collapsed"}`} key={key}>
+                    <button
+                      aria-expanded={groupOpen}
+                      className="case-file-head"
+                      onClick={() => setOpenRunGroup(groupOpen ? null : key)}
+                      type="button"
+                    >
+                      <FlaskConical className="case-file-ico" size={13} aria-hidden />
+                      <span>{run ? formatRelative(run.startedAt) : t("issues.noRun")}</span>
+                      <span className="case-file-counts">
+                        {run ? <StatusBadge tone={run.status === "failed" ? "failed" : run.status === "passed" ? "passed" : "running"}>{t(RUN_STATUS_KEYS[run.status])}</StatusBadge> : null}
+                        <span className="muted">{`${groupIssues.length} ${t("issues.count")}`}</span>
+                      </span>
+                      <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+                    </button>
+                    <div className="case-file-body">
+                      <div className="case-file-body-inner">
+                        <div className="issue-list">
+                          {groupIssues.map((issue) => {
+                            const issueOpen = openIssue === issue.id;
+                            return (
+                              <div className="issue-item" key={issue.id}>
+                                <button
+                                  aria-expanded={issueOpen}
+                                  className={`issue-row${issueOpen ? " open" : ""}`}
+                                  onClick={() => setOpenIssue(issueOpen ? null : issue.id)}
+                                  type="button"
+                                >
+                                  <span className="case-title">{issue.title}</span>
+                                  <span className="case-dur" style={{ display: "inline-flex", gap: 6, marginLeft: "auto" }}>
+                                    <SeverityBadge label={t(SEVERITY_KEYS[issue.severity])} severity={issue.severity} />
+                                    <IssueStatusBadge label={t(ISSUE_STATUS_KEYS[issue.status])} status={issue.status} />
+                                  </span>
+                                  <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+                                </button>
+                                <div className={`run-inline-body${issueOpen ? " open" : ""}`}>
+                                  <div className="run-inline-body-inner">
+                                    <div className="issue-detail">
+                                      <div className="issue-error-block">
+                                        <button
+                                          aria-label={t("common.copy")}
+                                          className="icon-button issue-copy"
+                                          onClick={() => {
+                                            void navigator.clipboard.writeText(`${issue.message}\n\n${window.location.origin}`);
+                                            toast(t("common.copied"));
+                                          }}
+                                          title={t("common.copy")}
+                                          type="button"
+                                        >
+                                          <Copy size={14} />
+                                        </button>
+                                        <CaseError text={issue.message} />
+                                      </div>
+                                      {issue.steps.length > 0 ? (
+                                        <div className="issue-repro">
+                                          <strong><ListOrdered size={14} /> {t("issue.steps")}</strong>
+                                          <ol>
+                                            {issue.steps.map((step) => <li key={step}>{step}</li>)}
+                                          </ol>
+                                        </div>
+                                      ) : null}
+                                      {issue.assignee ? (
+                                        <p className="muted" style={{ margin: 0 }}>{`${t("common.assignee")}: ${issue.assignee}`}</p>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+          </div>
         ) : (
           <EmptyState
             action={<button className="secondary-button" onClick={() => setTab("tests")}>{t("suites.openTestsTab")}</button>}

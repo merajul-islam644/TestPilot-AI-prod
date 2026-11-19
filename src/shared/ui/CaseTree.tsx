@@ -11,8 +11,8 @@
 //     title in order. Cases with no static block still render (the spec
 //     changed since the run).
 
-import { useMemo } from "react";
-import { CircleCheck, CircleX, FileCode2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, ChevronsDownUp, ChevronsUpDown, CircleCheck, CircleX, FileCode2 } from "lucide-react";
 import type { CaseResult, CaseStatus } from "../../lib/demo/data";
 import type { SpecTestBlock } from "../../lib/workspace/specBlocks";
 import { formatMs } from "../../lib/format";
@@ -242,15 +242,46 @@ export function CaseTree({ cases, files, onOpenIssue, running }: {
 }) {
   const { t } = useT();
   const tree = useMemo(() => buildTree(files ?? null, cases), [files, cases]);
+  // Per-file expand: rows start MINIMIZED, and clicking a head opens THAT
+  // row alone — an already-open row folds in the same click (accordion).
+  // The expanded-set is replaced wholesale on each toggle, so opening one
+  // row collapses every other open row in the same render; the two folding
+  // halves animate together via the grid-rows transition. Expand/Collapse
+  // all remain bulk overrides.
+  const [expandedFiles, setExpandedFiles] = useState<ReadonlySet<string>>(new Set());
+  const toggleFile = (file: string) => {
+    setExpandedFiles((prev) => (prev.has(file) ? new Set<string>() : new Set([file])));
+  };
+  const expandAll = () => setExpandedFiles(new Set(tree.map((group) => group.file)));
+  const collapseAll = () => setExpandedFiles(new Set());
   return (
     <div className="case-tree">
+      <div className="case-tree-toolbar">
+        <button className="secondary-button" onClick={collapseAll} type="button">
+          <ChevronsDownUp size={14} /> {t("run.cases.collapseAll")}
+        </button>
+        <button className="secondary-button" onClick={expandAll} type="button">
+          <ChevronsUpDown size={14} /> {t("run.cases.expandAll")}
+        </button>
+      </div>
       {tree.map((group) => {
         const passed = group.tests.filter((test) => test.status === "passed").length;
         const failed = group.tests.filter((test) => test.status === "failed").length;
+        const collapsed = !expandedFiles.has(group.file);
+        // The live heartbeat names the file executing right now — a folded
+        // file still has to advertise that it's the one working (the light
+        // sweep). Exact file match only: a heartbeat without a file must
+        // never light every row at once.
+        const fileRunning = !!running && !!running.file && running.file === group.file;
         return (
-          <div className="case-file" key={group.file}>
-            <div className="case-file-head">
-              <FileCode2 size={13} aria-hidden />
+          <div className={`case-file${collapsed ? " collapsed" : ""}${fileRunning ? " is-running" : ""}`} key={group.file}>
+            <button
+              aria-expanded={!collapsed}
+              className="case-file-head"
+              onClick={() => toggleFile(group.file)}
+              type="button"
+            >
+              <FileCode2 className="case-file-ico" size={13} aria-hidden />
               <span className="mono">{group.file || t("run.cases")}</span>
               {/* A count that has reached something renders as its colored
                   badge with the ✓ / ✗ mark; a zero count stays muted text —
@@ -274,8 +305,13 @@ export function CaseTree({ cases, files, onOpenIssue, running }: {
                   <span className="muted">{failed} {t("status.failed").toLowerCase()}</span>
                 )}
               </span>
-            </div>
-            {group.tests.map((test) => {
+              <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+            </button>
+            {/* The grid-rows trick: 1fr ↔ 0fr transitions the height
+                smoothly without measuring content. */}
+            <div className="case-file-body">
+              <div className="case-file-body-inner">
+                {group.tests.map((test) => {
               // The runner's current test lights up here — matched by title
               // and file (same keys the result matcher uses), and only while
               // no result has landed for it yet (testEnd flips the dot).
@@ -370,8 +406,10 @@ export function CaseTree({ cases, files, onOpenIssue, running }: {
                   })}
                 </div>
               );
-            })}
-            {group.tests.length === 0 ? <p className="muted case-file-empty">{t("run.noCases")}</p> : null}
+                })}
+                {group.tests.length === 0 ? <p className="muted case-file-empty">{t("run.noCases")}</p> : null}
+              </div>
+            </div>
           </div>
         );
       })}

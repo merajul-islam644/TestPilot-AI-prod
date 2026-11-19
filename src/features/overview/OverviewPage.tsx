@@ -1,14 +1,15 @@
 import { useMemo, useState } from "react";
-import { ChevronRight, CircleCheck, CircleX, Gauge, ListChecks } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleCheck, CircleX, FileCode2, Gauge, ListChecks } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
-import { buildDailyActivity, buildPassRateTrend, buildProjectStats, computeKpis, projectById, runTrigger } from "../../lib/demo/data";
-import type { DayActivity } from "../../lib/demo/data";
-import { formatCompact, formatNumber, formatPercent, healthDotClass, healthFromRate } from "../../lib/format";
+import { buildDailyActivity, buildPassRateTrend, buildProjectStats, computeKpis, projectById, projects, runTrigger } from "../../lib/demo/data";
+import type { DayActivity, Run } from "../../lib/demo/data";
+import { formatCompact, formatNumber, formatPercent, formatRelative, healthDotClass, healthFromRate } from "../../lib/format";
 import { useT } from "../../lib/i18n/LocalizationProvider";
 import { useDemoState } from "../../lib/demo/store";
 import { ChartCard, ChartLegend } from "../../shared/charts/ChartCard";
 import { StackedColumns } from "../../shared/charts/StackedColumns";
 import { DataTable } from "../../shared/ui/DataTable";
+import type { Column } from "../../shared/ui/DataTable";
 import { EmptyState } from "../../shared/ui/EmptyState";
 import { KpiCard } from "../../shared/ui/KpiCard";
 import type { KpiDelta } from "../../shared/ui/KpiCard";
@@ -17,13 +18,16 @@ import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
 import { ProjectIcon } from "../projects/ProjectIcon";
 import { useRunStatsColumns } from "../runs/runColumns";
+import { RunInlineRow } from "../runs/RunInlineRow";
 import { GlobalBranchSwitcher } from "./GlobalBranchSwitcher";
 
 type Range = "7" | "14" | "30";
 
-/** Rows per page in the Recent test runs table — paged instead of
- *  hard-truncated. */
-const RUNS_PAGE_SIZE = 10;
+/* The Recent test runs panel's scope: the Overview's widest range (30 days),
+   at most 5 runs per project — anything older or longer lives on the Test
+   runs board, so this panel never grows unbounded. */
+const RECENT_WINDOW_DAYS = 30;
+const RECENT_MAX_PER_PROJECT = 5;
 
 function deltaInfo(value: number, goodWhenUp: boolean, suffix: string): KpiDelta {
   return {
@@ -34,14 +38,39 @@ function deltaInfo(value: number, goodWhenUp: boolean, suffix: string): KpiDelta
 }
 
 export function OverviewPage() {
-  const { runs } = useDemoState();
+  const { runs, caseResults } = useDemoState();
   const { navigate } = useRoute();
   const { t } = useT();
   const [range, setRange] = useState<Range>("30");
-  const [runsPage, setRunsPage] = useState(1);
+  // Recent test runs: one project folded at a time — same rows as the Test
+  // runs board; clicking a run unfolds its case tree INLINE (no navigation,
+  // no sidebar selection change).
+  const [openProject, setOpenProject] = useState<string | null>(null);
+  const [openRun, setOpenRun] = useState<string | null>(null);
   const days = Number(range);
 
-  const kpis = useMemo(() => computeKpis(runs, days), [runs, days]);
+  // KPIs count each project ONCE — its latest run. Summing every run's
+  // totals kept re-counting the same testcases per execution ("10 tests run
+  // 3 times" read as 30). Latest-run-per-project = the current state of all
+  // projects. Deltas stay out: a previous-period comparison doesn't apply
+  // to a latest-run snapshot.
+  const kpis = useMemo(() => {
+    const latestByProject = new Map<string, Run>();
+    for (const run of runs) {
+      const existing = latestByProject.get(run.projectId);
+      if (!existing || run.startedAt > existing.startedAt) latestByProject.set(run.projectId, run);
+    }
+    const latest = [...latestByProject.values()];
+    const total = latest.reduce((sum, run) => sum + run.total, 0);
+    const passed = latest.reduce((sum, run) => sum + run.passed, 0);
+    const failed = latest.reduce((sum, run) => sum + run.failed, 0);
+    return {
+      totalTests: total,
+      passedTests: passed,
+      failedTests: failed,
+      successRate: total > 0 ? (passed / total) * 100 : 0
+    };
+  }, [runs]);
   const activity = useMemo(() => buildDailyActivity(runs, days), [runs, days]);
   const rateTrend = useMemo(() => buildPassRateTrend(runs, days), [runs, days]);
   const projectStats = useMemo(
@@ -51,6 +80,21 @@ export function OverviewPage() {
     [runs]
   );
   const runColumns = useRunStatsColumns();
+
+  // Inner-row columns mirror the Test runs board: the group header already
+  // names the project, so rows lead with WHEN the run happened; the Date
+  // column and the tail chevron column stay out (the rotating chevron below
+  // is the affordance).
+  const inlineColumns: Column<Run>[] = useMemo(() => {
+    const [, status, total, passed, failed, duration, , rate] = runColumns;
+    const started: Column<Run> = {
+      key: "started",
+      header: t("runs.started"),
+      render: (run) => <span className="table-link">{formatRelative(run.startedAt)}</span>,
+      width: "18%"
+    };
+    return [started, status, total, passed, failed, duration, rate].filter((col): col is Column<Run> => Boolean(col));
+  }, [runColumns, t]);
   // Projects with a live runner run — their health row gets the sweep.
   // Trigger resolves through runTrigger(): gateway-loaded rows (every
   // post-reload read) carry no trigger field, so a direct read went dark.
@@ -65,12 +109,21 @@ export function OverviewPage() {
     { id: "30", label: t("overview.range30") }
   ];
 
-  // Recent runs paging — clamped so a live update that adds/removes rows
-  // (new run lands, run finishes) can never leave the page out of range.
-  const runsTotalPages = Math.max(1, Math.ceil(runs.length / RUNS_PAGE_SIZE));
-  const safeRunsPage = Math.min(runsPage, runsTotalPages);
-  const runsStart = (safeRunsPage - 1) * RUNS_PAGE_SIZE;
-  const visibleRuns = runs.slice(runsStart, runsStart + RUNS_PAGE_SIZE);
+  // Recent runs grouped by project — one collapsible row per project with
+  // runs, unfolding into that project's runs table. The panel is capped on
+  // purpose: only runs from the last 30 days (the Overview's widest range)
+  // and the latest 5 per project, newest first — history beyond that lives
+  // on the Test runs board, never swelling this panel.
+  const runGroups = useMemo(() => {
+    const cutoff = Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    return projects.map((project) => ({
+      project,
+      projectRuns: runs
+        .filter((run) => run.projectId === project.id && run.startedAt >= cutoff)
+        .sort((a, b) => b.startedAt - a.startedAt)
+        .slice(0, RECENT_MAX_PER_PROJECT)
+    })).filter((group) => group.projectRuns.length > 0);
+  }, [runs]);
 
   const hasActivity = activity.some((day) => day.passed + day.failed > 0);
   const totalPassed = activity.reduce((sum, day) => sum + day.passed, 0);
@@ -90,32 +143,25 @@ export function OverviewPage() {
 
       <div className="kpis">
         <KpiCard
-          delta={deltaInfo(kpis.deltas.total, true, "%")}
           icon={<ListChecks size={15} />}
           label={t("overview.kpi.total")}
-          spark={totalsDaily.slice(-12)}
           value={formatCompact(kpis.totalTests)}
         />
         <KpiCard
-          delta={deltaInfo(kpis.deltas.passed, true, "%")}
           icon={<CircleCheck size={15} />}
           label={t("overview.kpi.passed")}
           tone="ok"
           value={formatCompact(kpis.passedTests)}
         />
         <KpiCard
-          delta={deltaInfo(kpis.deltas.failed, false, "%")}
           icon={<CircleX size={15} />}
           label={t("overview.kpi.failed")}
-          spark={failedDaily.slice(-12)}
           tone="bad"
           value={formatCompact(kpis.failedTests)}
         />
         <KpiCard
-          delta={deltaInfo(kpis.deltas.rate, true, "pp")}
           icon={<Gauge size={15} />}
           label={t("overview.kpi.success")}
-          spark={rateTrend.slice(-12).map((point) => point.value)}
           value={formatPercent(kpis.successRate)}
         />
       </div>
@@ -201,36 +247,71 @@ export function OverviewPage() {
         </div>
         {/* ?from tells the run page which trail to draw: from here it is
             Overview › project › run, from the Test runs board it stays
-            Test runs › run. */}
-        <DataTable columns={runColumns} fixed onRowClick={(run) => navigate(`/runs/${run.id}?from=overview`)} rows={visibleRuns} />
-        {runsTotalPages > 1 ? (
-          <div className="pagination">
-            <span className="pagination-count">
-              {runsStart + 1}–{Math.min(runsStart + RUNS_PAGE_SIZE, runs.length)} / {runs.length}
-            </span>
-            <div className="pagination-controls">
-              <button
-                className="secondary-button"
-                disabled={safeRunsPage <= 1}
-                onClick={() => setRunsPage(Math.max(1, safeRunsPage - 1))}
-                type="button"
-              >
-                {t("users.prevPage")}
-              </button>
-              <span>
-                {t("users.page")} {safeRunsPage} {t("users.of")} {runsTotalPages}
-              </span>
-              <button
-                className="secondary-button"
-                disabled={safeRunsPage >= runsTotalPages}
-                onClick={() => setRunsPage(Math.min(runsTotalPages, safeRunsPage + 1))}
-                type="button"
-              >
-                {t("users.nextPage")}
-              </button>
-            </div>
-          </div>
-        ) : null}
+            Test runs › run. Project rows fold the same way the Test runs
+            board groups them. */}
+        <div className="case-tree">
+          {runGroups.map(({ project, projectRuns }) => {
+            const open = openProject === project.id;
+            const failed = projectRuns.filter((run) => run.status === "failed").length;
+            return (
+              <div className={`case-file${open ? "" : " collapsed"}`} key={project.id}>
+                <button
+                  aria-expanded={open}
+                  className="case-file-head"
+                  onClick={() => setOpenProject(open ? null : project.id)}
+                  type="button"
+                >
+                  <FileCode2 className="case-file-ico" size={13} aria-hidden />
+                  <span>{project.name}</span>
+                  <span className="case-file-counts">
+                    {failed > 0 ? (
+                      <span className="badge badge-failed">
+                        <CircleX size={13} />
+                        {failed} {t("status.failed").toLowerCase()}
+                      </span>
+                    ) : null}
+                    <span className="muted">{`${projectRuns.length} ${t("runs.count")}`}</span>
+                  </span>
+                  <ChevronDown className="case-file-chevron" size={15} aria-hidden />
+                </button>
+                <div className="case-file-body">
+                  <div className="case-file-body-inner">
+                    {/* Run rows unfold INLINE — no navigation, no sidebar
+                        selection change. Column set mirrors the Test runs
+                        board's inner rows (time leads, no project name). */}
+                    <div className="runs-inline">
+                      <div className="runs-inline-row runs-inline-head">
+                        {inlineColumns.map((col) => (
+                          <span
+                            className={`${col.align === "end" ? "cell-end" : ""}${col.className ? ` ${col.className}` : ""}`}
+                            key={col.key}
+                            style={col.width ? { flex: "none", width: col.width } : undefined}
+                          >
+                            {col.header}
+                          </span>
+                        ))}
+                        <span aria-hidden className="runs-inline-tail" />
+                      </div>
+                      {projectRuns.map((run) => {
+                        const runOpen = openRun === run.id;
+                        return (
+                          <RunInlineRow
+                            cases={caseResults.filter((entry) => entry.runId === run.id)}
+                            inlineColumns={inlineColumns}
+                            key={run.id}
+                            onToggle={() => setOpenRun(runOpen ? null : run.id)}
+                            open={runOpen}
+                            run={run}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </section>
   );

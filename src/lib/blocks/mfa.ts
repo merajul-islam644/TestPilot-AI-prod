@@ -109,7 +109,7 @@ export function parseTotpSetup(payload: Record<string, unknown>): TotpSetupPaylo
 
 /** Builds an otpauth:// URI from a bare secret so the QR generator always has
  *  something to encode, matching what authenticator apps expect. */
-export function buildOtpauthUri(secret: string, email: string, issuer = "TestPilot AI"): string {
+export function buildOtpauthUri(secret: string, email: string, issuer = "TestPilot"): string {
   const label = encodeURIComponent(`${issuer}:${email || "account"}`);
   const query = new URLSearchParams({ issuer, secret });
   return `otpauth://totp/${label}?${query.toString()}`;
