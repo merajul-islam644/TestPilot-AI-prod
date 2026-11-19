@@ -32,6 +32,16 @@ export type PickResult =
 /** @deprecated legacy alias — use PickResult. */
 export type PickFolderResult = PickResult;
 
+/** One test as Playwright's own loader reported it (POST /list). `file` is
+ *  the workspace-relative path the app sent; `line` is the declaration line
+ *  or null when this Playwright build omits it. */
+export type ListedTest = {
+  file: string;
+  title: string;
+  describeChain: string[];
+  line: number | null;
+};
+
 async function postJson<T>(route: string, body: unknown): Promise<T> {
   const response = await fetch(`${runnerUrl()}${route}`, {
     method: "POST",
@@ -114,6 +124,28 @@ export const localFolder = {
   /** Write one text file; missing parents are created (mkdir -p). */
   async writeUserFile(opts: { root: string; path: string; content: string }): Promise<void> {
     await postJson("/api/workbench/write", { root: opts.root, path: opts.path, content: opts.content });
+  },
+
+  /** Playwright's own `--list` over the workspace (POST /list on the
+   *  runner): the runner materializes the sent files in a temp project and
+   *  lets the real loader collect them, so the tree is exact for ANY
+   *  authoring format. Null when the runner is unreachable, times out
+   *  (90 s), or the specs fail to load — callers keep their text-scan
+   *  preview in every one of those cases. */
+  async listTests(root: string, files: { name: string; content: string }[]): Promise<ListedTest[] | null> {
+    try {
+      const response = await fetch(`${runnerUrl()}/list`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ root, files }),
+        signal: AbortSignal.timeout(90_000)
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as { ok: boolean; tests?: ListedTest[] };
+      return data.ok && Array.isArray(data.tests) ? data.tests : null;
+    } catch {
+      return null;
+    }
   },
 
   /** Delete a file or directory (recursive). Throws on ENOENT — callers

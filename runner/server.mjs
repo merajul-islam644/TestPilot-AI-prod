@@ -362,6 +362,130 @@ function applyProgressEvent(event) {
   }
 }
 
+// ── Spec collection (the tree's source of truth) ─────────────────────────
+// Same contract as /run but only COLLECTS: materializes the sent files in a
+// temp project and runs the bundled CLI with --list, so the test tree comes
+// from Playwright's own loader — any authoring style, exact titles and
+// describe chains, even tests the app's text scanner cannot see. The app
+// upgrades its instant scan with this; on 422/5xx it keeps the scan. No
+// progress reporter, no browsers launched.
+app.post("/list", async (req, res) => {
+  const body = req.body ?? {};
+  const files = Array.isArray(body.files) ? body.files : [];
+  if (files.length === 0) {
+    res.status(400).json({ ok: false, error: "files[] is required (at least one spec)" });
+    return;
+  }
+  if (files.length > MAX_FILES) {
+    res.status(400).json({ ok: false, error: `Too many files (max ${MAX_FILES})` });
+    return;
+  }
+  for (const file of files) {
+    if (!validWorkspacePath(file?.name)) {
+      res.status(400).json({ ok: false, error: `Invalid workspace path: ${String(file?.name).slice(0, 80)}` });
+      return;
+    }
+    if (typeof file?.content !== "string") {
+      res.status(400).json({ ok: false, error: `Missing content: ${file.name}` });
+      return;
+    }
+  }
+  const runsRoot = path.join(RUNNER_ROOT, ".runs");
+  await mkdir(runsRoot, { recursive: true });
+  const dir = await mkdtemp(path.join(runsRoot, "list-"));
+  try {
+    const envVars = await readWorkspaceEnvFiles(body.root);
+    const baseURL = envVars.E2E_BASE_URL
+      ?? (typeof body.baseURL === "string" && body.baseURL.length > 0 ? body.baseURL : "https://example.com");
+    for (const file of files) {
+      // The generated config must stay the only one the CLI can find (same
+      // reason as /run — a workspace config importing dotenv would die here).
+      const base = file.name.split("/").pop() ?? "";
+      if (file.name === "package.json" || /^playwright\.config\./.test(base)) continue;
+      const target = path.join(dir, ...file.name.split("/"));
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, file.content, "utf8");
+    }
+    // Same CJS pin as /run — extensionless helper imports must resolve the
+    // way they do in the source workspace.
+    await writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "commonjs" }), "utf8");
+    await writeFile(path.join(dir, "playwright.config.mjs"), buildConfig(baseURL, files.map((file) => file.name), { progress: false }), "utf8");
+    const listed = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [PLAYWRIGHT_CLI, "test", "--list", "--config", "playwright.config.mjs", "--reporter=json"], {
+        cwd: dir,
+        env: { ...process.env, ...envVars },
+        windowsHide: true
+      });
+      let stdoutText = "";
+      let stderrText = "";
+      const killer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 90_000);
+      child.stdout.on("data", (chunk) => { stdoutText += chunk; });
+      child.stderr.on("data", (chunk) => { stderrText += chunk; });
+      child.on("error", (error) => {
+        clearTimeout(killer);
+        resolve({ stdoutText: "", stderrText: `${String(error?.message || error)}\n${stderrText}` });
+      });
+      child.on("close", () => { clearTimeout(killer); resolve({ stdoutText, stderrText }); });
+    });
+    let report = null;
+    try { report = JSON.parse(listed.stdoutText); } catch { /* collection crashed — surfaced below */ }
+    if (!report) {
+      console.error("[list] collection failed — full stderr:\n", listed.stderrText, "\n[list] stdout head:\n", listed.stdoutText.slice(0, 600));
+      res.status(422).json({
+        ok: false,
+        error: "Playwright could not load the specs",
+        // Head, not tail: the message and the failing FILE come first —
+        // the stack below them is the noise.
+        detail: (listed.stderrText || listed.stdoutText).slice(0, 4000)
+      });
+      return;
+    }
+    const tests = [];
+    // Playwright reports `file` relative to the config's testDir on some
+    // builds and absolute on others — re-anchor every report to the exact
+    // workspace-relative name the app sent, by matching against that set.
+    const sentNames = new Set(files.map((file) => file.name));
+    const specRoots = [...new Set(
+      files
+        .filter((file) => /\.spec\.[tj]s$/.test(file.name))
+        .map((file) => (file.name.includes("/") ? file.name.split("/")[0] : "."))
+    )];
+    const filePrefix = specRoots.length === 1 && specRoots[0] === "tests" ? "tests/" : "";
+    // Walk the JSON suites: project-level suites carry no `file` (their title
+    // must not enter the describe chain), file suites carry one — their title
+    // is the file path, so it is dropped the same way.
+    (function walk(suite, chain) {
+      // The file suite's title repeats the file path — sometimes with the
+      // other slash flavor than `file`, so compare normalized forms before
+      // letting a title into the describe chain.
+      const title = suite.title ? String(suite.title).split(path.sep).join("/") : "";
+      const file = suite.file ? String(suite.file).split(path.sep).join("/") : "";
+      const nextChain = file && title && title !== file ? [...chain, suite.title] : chain;
+      for (const child of suite.suites ?? []) walk(child, nextChain);
+      for (const spec of suite.specs ?? []) {
+        const raw = suite.file ?? spec.file ?? "";
+        const normalized = raw.split(path.sep).join("/");
+        const abs = path.isAbsolute(raw) ? raw : path.resolve(dir, raw);
+        const candidates = [
+          filePrefix + normalized,
+          normalized,
+          path.relative(dir, abs).split(path.sep).join("/")
+        ];
+        const file = candidates.find((candidate) => sentNames.has(candidate)) ?? candidates[0];
+        tests.push({
+          file,
+          title: spec.title ?? "",
+          describeChain: nextChain,
+          line: typeof spec.line === "number" ? spec.line : null
+        });
+      }
+    })(report, []);
+    res.json({ ok: true, tests });
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, runner: "testpilot-runner", version: "0.1.0", busy: activeRuns > 0 });
 });
@@ -1809,7 +1933,12 @@ app.post("/run", async (req, res) => {
   }
 });
 
-function buildConfig(baseURL, fileNames = []) {
+function buildConfig(baseURL, fileNames = [], options = {}) {
+  // The live progress reporter only exists in RUN temp projects — /list
+  // materializes a lighter one, so its config omits that reporter entry.
+  const reporter = options.progress === false
+    ? `[["json", { outputFile: "report.json" }]]`
+    : `[["json", { outputFile: "report.json" }], ["./progress-reporter.mjs"]]`;
   // Mirror the source repo's shape: its suites are sequential (workers 1)
   // with a 120 s per-test budget and a shared global setup — parallel
   // execution or short timeouts would break the shared-state assumptions.
@@ -1887,11 +2016,10 @@ export default defineConfig({
       }
     }
   ],
-  reporter: [["json", { outputFile: "report.json" }], ["./progress-reporter.mjs"]]
+  reporter: ${reporter}
 });
 `;
   }
-
   // Flat fallback for workspaces with a different layout: every spec in
   // the tree runs in one default project.
   return `export default {
@@ -1906,7 +2034,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "off"
   },
-  reporter: [["json", { outputFile: "report.json" }], ["./progress-reporter.mjs"]]
+  reporter: ${reporter}
 };
 `;
 }
