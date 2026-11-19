@@ -1,0 +1,3 @@
+artifacts/
+.auth/
+fixtures/data-session.json

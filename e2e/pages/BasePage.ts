@@ -24,7 +24,7 @@ export abstract class BasePage {
     // Scoped to the main h2: when a workspace is empty, the empty state
     // repeats the title as an h3 and a bare name match would hit both.
     this.heading = page.getByRole("main").getByRole("heading", { level: 2, name: title, exact: true });
-    this.shellNav = page.getByRole("navigation", { name: "TestPilot AI" });
+    this.shellNav = page.getByRole("navigation", { name: "TestPilot" });
     this.main = page.getByRole("main");
   }
 

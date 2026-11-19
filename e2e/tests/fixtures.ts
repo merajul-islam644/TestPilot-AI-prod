@@ -1,6 +1,7 @@
 import { test as base } from "@playwright/test";
 
-// Every menu test runs with the session saved by tests/auth.setup.ts and with
+// Every menu test runs with the session saved by tests/suite/suite.setup.spec.ts (the
+// runner's "data-setup" project) and with
 // calls to the optional local runner service (localhost:9090) aborted — it is
 // only reachable when a companion process runs on the tester's machine, and
 // its absence must not slow the suite down.
