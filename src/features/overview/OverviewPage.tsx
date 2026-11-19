@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, CircleCheck, CircleX, FileCode2, Gauge, ListChecks } from "lucide-react";
+import { ChevronDown, ChevronRight, CircleCheck, CircleX, FileCode2, Gauge, ListChecks, Rocket } from "lucide-react";
 import { useRoute } from "../../app/router/routes";
 import { buildDailyActivity, buildPassRateTrend, buildProjectStats, computeKpis, projectById, projects, runTrigger } from "../../lib/demo/data";
 import type { DayActivity, Run } from "../../lib/demo/data";
@@ -16,6 +16,7 @@ import type { KpiDelta } from "../../shared/ui/KpiCard";
 import { PageHeader } from "../../shared/ui/PageHeader";
 import { Segmented } from "../../shared/ui/Segmented";
 import type { SegmentOption } from "../../shared/ui/Segmented";
+import { BootstrapModal } from "../suites/BootstrapModal";
 import { ProjectIcon } from "../projects/ProjectIcon";
 import { useRunStatsColumns } from "../runs/runColumns";
 import { RunInlineRow } from "../runs/RunInlineRow";
@@ -42,6 +43,7 @@ export function OverviewPage() {
   const { navigate } = useRoute();
   const { t } = useT();
   const [range, setRange] = useState<Range>("30");
+  const [bootstrapOpen, setBootstrapOpen] = useState(false);
   // Recent test runs: one project folded at a time — same rows as the Test
   // runs board; clicking a run unfolds its case tree INLINE (no navigation,
   // no sidebar selection change).
@@ -134,7 +136,16 @@ export function OverviewPage() {
   return (
     <section>
       <PageHeader
-        actions={<Segmented onChange={(id) => setRange(id)} options={rangeOptions} value={range} />}
+        actions={(
+          <div style={{ alignItems: "center", display: "flex", gap: 8 }}>
+            {/* Bootstrap sits left of the range tabs — the hand-off point
+               where a coding agent gets this repo's Playwright suite ready. */}
+            <button className="secondary-button" onClick={() => setBootstrapOpen(true)} type="button">
+              <Rocket size={15} /> {t("suites.bootstrapButton")}
+            </button>
+            <Segmented onChange={(id) => setRange(id)} options={rangeOptions} value={range} />
+          </div>
+        )}
         subtitle={t("overview.subtitle")}
         title={t("overview.title")}
       />
@@ -313,6 +324,7 @@ export function OverviewPage() {
           })}
         </div>
       </div>
+      {bootstrapOpen ? <BootstrapModal onClose={() => setBootstrapOpen(false)} /> : null}
     </section>
   );
 }

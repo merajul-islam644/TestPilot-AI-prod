@@ -547,6 +547,15 @@ a.table-link:hover { color: hsl(var(--primary)); }
 .modal > p, .modal-sub { color: hsl(var(--muted-foreground)); font-size: 13.5px; margin: -6px 0 0; }
 .modal-actions { align-items: center; display: flex; gap: 8px; justify-content: flex-end; }
 
+/* Bootstrap-with-an-AI-agent dialog (Suites page) — one copyable prompt that
+   hands the repo to a coding agent, mirroring the Blocks OS portal dialog. */
+.bootstrap-body { display: grid; gap: 12px; }
+.bootstrap-prompt { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); border-radius: var(--radius-card); font-size: 13.5px; line-height: 1.55; margin: 0; padding: 12px 14px; word-break: break-word; }
+.bootstrap-prompt a { color: hsl(var(--primary)); }
+.bootstrap-hint { font-size: 12.5px; line-height: 1.5; margin: 0; }
+.bootstrap-actions { align-items: center; display: flex; gap: 14px; justify-content: flex-end; margin-top: 2px; }
+.bootstrap-actions .link-button { font-size: 13px; }
+
 /* ============================================================
    Command palette (the one deliberate showpiece â€” Raycast-style)
    ============================================================ */
